@@ -65,7 +65,9 @@ function errback(cb, e) {
 }
 
 // todo: support .. and ~
-function cleanpath(path) {
+// cwd defaults to globalThis.cwd for the worker call sites; the parameter
+// form exists so the function can be unit-tested without a worker context.
+function cleanpath(path, cwd = globalThis.cwd) {
     // console.log("cleanpath", path);
     if (path.startsWith("./")) {
         path = path.slice(2);
@@ -73,8 +75,10 @@ function cleanpath(path) {
     if (path === "/") {
         return ".";
     }
-    if (!path.startsWith("/")) {
-        path = [globalThis.cwd, path].join("/");
+    // "#"-prefixed paths are absolute namespace anchors (e.g. "#task/new/auto"),
+    // not relative paths — never join them with cwd.
+    if (!path.startsWith("/") && !path.startsWith("#")) {
+        path = [cwd, path].join("/");
     }
     path = path.replace(/\/+/g, '/'); // collapse multiple slashes
     path = path.replace(/^\/+/, ''); // remove leading slash
