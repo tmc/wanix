@@ -65,6 +65,9 @@ function errback(cb, e) {
     if (e.includes("invalid argument")) {
         err.code = "EINVAL";
     }
+    if (e.includes("operation not supported") || e.includes("not supported")) {
+        err.code = "ENOTSUP";
+    }
     if (!err.code) {
         // Go's syscall.mapJSError panics if .code is not in its errnoByCode
         // table. Default to EIO so unknown errors surface as an io error

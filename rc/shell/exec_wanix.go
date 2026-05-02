@@ -30,13 +30,13 @@ func runExternalCommand(ctx context.Context, hc interp.HandlerContext, path stri
 	rid := strings.TrimSpace(string(ridRaw))
 	base := filepath.Join("#task", rid)
 
-	if err := os.WriteFile(filepath.Join(base, "cmd"), []byte(joinTaskArgs(argv)), 0o644); err != nil {
+	if err := writeTaskField(filepath.Join(base, "cmd"), []byte(joinTaskArgs(argv))); err != nil {
 		return 1, err
 	}
-	if err := os.WriteFile(filepath.Join(base, "env"), []byte(joinTaskEnv(hc)), 0o644); err != nil {
+	if err := writeTaskField(filepath.Join(base, "env"), []byte(joinTaskEnv(hc))); err != nil {
 		return 1, err
 	}
-	if err := os.WriteFile(filepath.Join(base, "dir"), []byte(hc.Dir), 0o644); err != nil {
+	if err := writeTaskField(filepath.Join(base, "dir"), []byte(hc.Dir)); err != nil {
 		return 1, err
 	}
 
@@ -73,7 +73,7 @@ func runExternalCommand(ctx context.Context, hc interp.HandlerContext, path stri
 		}()
 	}
 
-	if err := os.WriteFile(filepath.Join(base, "ctl"), []byte("start"), 0o644); err != nil {
+	if err := writeTaskField(filepath.Join(base, "ctl"), []byte("start")); err != nil {
 		return 1, err
 	}
 
@@ -86,6 +86,25 @@ func runExternalCommand(ctx context.Context, hc interp.HandlerContext, path stri
 	_ = stderrFile.Close()
 	wg.Wait()
 	return code, nil
+}
+
+// writeTaskField writes data to a wanix virtual field file (cmd, env, dir,
+// ctl, etc.). It avoids os.WriteFile because that uses O_CREATE|O_TRUNC,
+// which the wanix kernel currently rejects on virtual files (Create is not
+// supported on misc.FieldFile, so the truncate-by-recreate path in
+// fs/openfile.go fails with "operation not supported"). Plain O_WRONLY
+// works because the field file's setter callback runs at Close and replaces
+// the content with what was written.
+func writeTaskField(name string, data []byte) error {
+	f, err := os.OpenFile(name, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func shouldForwardStdin(r io.Reader) bool {

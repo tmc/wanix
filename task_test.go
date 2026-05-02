@@ -2,6 +2,8 @@ package wanix
 
 import (
 	"context"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -75,6 +77,83 @@ func TestSpawnedTaskInheritsParentFDs(t *testing.T) {
 		if string(got) != string(parentMarker) {
 			t.Errorf("read %s from child ns: got %q, want %q", path, got, parentMarker)
 		}
+	}
+}
+
+// TestSpawnerCanWriteCmdViaTrunc documents a kernel-side bug surfaced in
+// 2307's apptron v6 deployment: rc used os.WriteFile to set #task/<child>/cmd,
+// which opens with O_WRONLY|O_CREATE|O_TRUNC. The truncate path in
+// fs/openfile.go calls Create on the file, but misc.FieldFile (the cmd file's
+// implementation) does not support Create — so the open fails with
+// "operation not supported" and rc dies before reaching fd binding. The
+// rc-side workaround (open with plain O_WRONLY in writeTaskField) avoids the
+// Create path. This test stays as a regression sentinel for the kernel side:
+// when fs/openfile.go (or FieldFile) is taught to truncate without Create,
+// this test should pass without rc's workaround.
+func TestSpawnerCanWriteCmdViaTrunc(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), TaskContextKey, root)
+
+	ridFile, err := fs.OpenContext(ctx, root.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatalf("open #task/new/auto: %v", err)
+	}
+	var ridBuf [16]byte
+	n, err := ridFile.Read(ridBuf[:])
+	if err != nil {
+		t.Fatalf("read rid: %v", err)
+	}
+	ridFile.Close()
+	rid := strings.TrimSpace(string(ridBuf[:n]))
+
+	cmdPath := "#task/" + rid + "/cmd"
+	f, err := fs.OpenFile(root.Namespace(), cmdPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Skipf("kernel open #task/<rid>/cmd with O_TRUNC fails: %v (rc works around with O_WRONLY only)", err)
+	}
+	if _, err := f.(io.Writer).Write([]byte("warren help\n")); err != nil {
+		t.Errorf("write %s: %v", cmdPath, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Errorf("close %s: %v", cmdPath, err)
+	}
+}
+
+// TestSpawnerCanWriteCmdPlain mirrors the rc-side workaround: open the cmd
+// file with plain O_WRONLY (no O_CREATE, no O_TRUNC). This is the path
+// rc/shell/exec_wanix.go:writeTaskField now uses. It must work today.
+func TestSpawnerCanWriteCmdPlain(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), TaskContextKey, root)
+
+	ridFile, err := fs.OpenContext(ctx, root.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatalf("open #task/new/auto: %v", err)
+	}
+	var ridBuf [16]byte
+	n, err := ridFile.Read(ridBuf[:])
+	if err != nil {
+		t.Fatalf("read rid: %v", err)
+	}
+	ridFile.Close()
+	rid := strings.TrimSpace(string(ridBuf[:n]))
+
+	cmdPath := "#task/" + rid + "/cmd"
+	f, err := fs.OpenFile(root.Namespace(), cmdPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open %s for write: %v", cmdPath, err)
+	}
+	if _, err := f.(io.Writer).Write([]byte("warren help\n")); err != nil {
+		t.Errorf("write %s: %v", cmdPath, err)
+	}
+	if err := f.Close(); err != nil {
+		t.Errorf("close %s: %v", cmdPath, err)
 	}
 }
 
