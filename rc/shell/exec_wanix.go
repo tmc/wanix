@@ -15,6 +15,12 @@ import (
 	"mvdan.cc/sh/v3/interp"
 )
 
+// runExternalCommand spawns a wanix task and blocks until it exits.
+//
+// Backgrounding (`cmd &`) is handled at the mvdan/sh interp layer: it spawns
+// a subshell goroutine that calls this handler, so blocking here is correct
+// even for backgrounded commands. The `wait` builtin blocks on those
+// goroutines, which means it waits for the underlying tasks too.
 func runExternalCommand(ctx context.Context, hc interp.HandlerContext, path string, args []string) (int, error) {
 	argv := append([]string{path}, args...)
 	ridRaw, err := os.ReadFile("#task/new/auto")
