@@ -345,6 +345,7 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 		}
 	} else {
 		p.ns = vfs.New(ctx)
+		log.Printf("task: alloc rid %s with parent=nil (no fd inheritance, empty ns)", rid)
 	}
 	d.resources[rid] = p
 	return p, nil
@@ -363,7 +364,12 @@ func (d *TaskFS) ResolveFS(ctx context.Context, name string) (fs.FS, string, err
 			return &fskit.FuncFile{
 				Node: fskit.Entry(name, 0555),
 				ReadFunc: func(n *fskit.Node) error {
-					t, _ := FromContext(ctx)
+					t, ok := FromContext(ctx)
+					if ok {
+						log.Printf("task: new/%s read with parent=%s", name, t.ID())
+					} else {
+						log.Printf("task: new/%s read with NO parent in ctx", name)
+					}
 					p, err := d.Alloc(name, t)
 					if err != nil {
 						return err
