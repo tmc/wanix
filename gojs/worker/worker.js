@@ -40,6 +40,13 @@ function log(...args) {
 
 function errback(cb, e) {
     if (e instanceof Error) throw e;
+    // Host errors arrive as strings via the duplex/rpc layer, but structured
+    // Go error types (e.g. *fs.PathError) can deserialize as objects. Coerce
+    // to a string before any .includes checks so a non-string error never
+    // crashes the worker mid-syscall.
+    if (typeof e !== "string") {
+        e = (e && (e.message || e.error)) ? String(e.message || e.error) : JSON.stringify(e);
+    }
     log("errback", e);
     const err = new Error(e);
     if (e.includes("does not exist")) {
