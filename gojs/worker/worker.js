@@ -66,6 +66,12 @@ function errback(cb, e) {
         err.code = "EINVAL";
     }
     if (!err.code) {
+        // Go's syscall.mapJSError panics if .code is not in its errnoByCode
+        // table. Default to EIO so unknown errors surface as an io error
+        // instead of crashing the worker. Without this, any host error whose
+        // message doesn't match the pattern checks above (e.g. "exit status 1",
+        // "operation not supported on resource X") panics the wasm module.
+        err.code = "EIO";
         console.warn(err);
     }
     cb(err);
