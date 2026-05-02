@@ -53,6 +53,7 @@ func runEditedREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser,
 	rw := &readWriter{r: in, w: stderr}
 	t := term.NewTerminal(rw, "rc% ")
 	t.History = newRingHistory(historyCap)
+	t.AutoCompleteCallback = pathComplete
 
 	for {
 		line, err := t.ReadLine()
