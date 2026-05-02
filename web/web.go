@@ -34,8 +34,7 @@ type gojsDriver struct {
 }
 
 func (d *gojsDriver) Check(t *wanix.Task) bool {
-	// todo: gojs detection
-	return strings.HasSuffix(t.Arg(0), ".wasm")
+	return taskWasmHasMarker(t, gojsMarker)
 }
 
 func (d *gojsDriver) Start(t *wanix.Task) error {
@@ -47,8 +46,8 @@ type wasiDriver struct {
 }
 
 func (d *wasiDriver) Check(t *wanix.Task) bool {
-	// todo: wasi detection
-	return strings.HasSuffix(t.Arg(0), ".wasm")
+	return taskWasmHasMarker(t, wasiMarkerPreview1) ||
+		taskWasmHasMarker(t, wasiMarkerUnstable)
 }
 
 func (d *wasiDriver) Start(t *wanix.Task) error {
