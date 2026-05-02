@@ -2,33 +2,47 @@ package wanix
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
 	"tractor.dev/wanix/fs"
+	"tractor.dev/wanix/fs/fskit"
 )
 
-// TestSpawnedTaskHasFDPaths reproduces a server-side spawn failure observed in
-// rc/shell/exec_wanix.go: rc allocates an external command via #task/new/auto,
-// writes cmd/env/dir, and then opens #task/<rid>/fd/1 to read stdout. That
-// open fails with ErrNotExist because nothing in the Go-side TaskFS path
-// creates fd entries. The JS <wanix-task> element binds fd/0,1,2 explicitly
-// after allocation (elements/task.js:87-94), so DOM-spawned tasks work; tasks
-// allocated from server-side code do not.
+// TestSpawnedTaskInheritsParentFDs covers the asymmetry between markup-spawned
+// and code-spawned tasks. The JS <wanix-task> element binds fd/0,1,2 onto the
+// task's namespace after allocation (elements/task.js:87-94). Tasks allocated
+// from Go via #task/new/auto used to skip that step, so any caller (rc's
+// shell/exec_wanix.go:37 is the real one) opening #task/<rid>/fd/1 hit
+// ErrNotExist.
 //
-// This test reproduces the failure mode independent of rc, the worker, and any
-// browser plumbing. It should fail today and pass once #task/new/auto either
-// pre-creates fd/0,1,2 or inherits them from the parent. Either fix is
-// acceptable; this test only asserts that fd/1 resolves on a freshly allocated
-// child task.
-func TestSpawnedTaskHasFDPaths(t *testing.T) {
+// The fix in TaskFS.Alloc inherits the parent's fd/0,1,2 onto the child by
+// binding parent's #task/<parent.id>/fd/<n> onto child's
+// #task/<child.id>/fd/<n>. This matches unix fork/execve semantics. Children
+// can rebind before writing "start" to ctl if they want to redirect.
+//
+// This test sets up a parent that has fd/0,1,2 (the way JS would), allocates
+// a child via #task/new/auto, and asserts the child's fd paths resolve to the
+// same data the parent bound. Failure modes: ErrNotExist (no inheritance) or
+// reading wrong content (bound the wrong source).
+func TestSpawnedTaskInheritsParentFDs(t *testing.T) {
 	root, err := NewRoot()
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := context.WithValue(context.Background(), TaskContextKey, root)
 
+	parentMarker := []byte("parent-fd-payload\n")
+	for _, fd := range []string{"0", "1", "2"} {
+		src := fskit.MapFS{
+			"data": fskit.RawNode(parentMarker, 0644),
+		}
+		dst := "#task/" + root.ID() + "/fd/" + fd
+		if err := root.Namespace().Bind(src, "data", dst); err != nil {
+			t.Fatalf("bind parent fd/%s: %v", fd, err)
+		}
+	}
+
+	ctx := context.WithValue(context.Background(), TaskContextKey, root)
 	ridFile, err := fs.OpenContext(ctx, root.Namespace(), "#task/new/auto")
 	if err != nil {
 		t.Fatalf("open #task/new/auto: %v", err)
@@ -43,18 +57,23 @@ func TestSpawnedTaskHasFDPaths(t *testing.T) {
 	if rid == "" {
 		t.Fatal("empty rid")
 	}
+	if rid == root.ID() {
+		t.Fatalf("child rid %q should differ from root %q", rid, root.ID())
+	}
 
-	for _, fd := range []string{"fd/0", "fd/1", "fd/2"} {
-		path := "#task/" + rid + "/" + fd
-		f, err := fs.OpenContext(ctx, root.Namespace(), path)
+	child, err := root.Lookup(rid)
+	if err != nil {
+		t.Fatalf("lookup child: %v", err)
+	}
+	for _, fd := range []string{"0", "1", "2"} {
+		path := "#task/" + rid + "/fd/" + fd
+		got, err := fs.ReadFile(child.Namespace(), path)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				t.Errorf("open %s: not found (server-side spawn allocates no fd entries; rc/shell/exec_wanix.go:37 hits this)", path)
-				continue
-			}
-			t.Errorf("open %s: %v", path, err)
+			t.Errorf("read %s: %v", path, err)
 			continue
 		}
-		f.Close()
+		if string(got) != string(parentMarker) {
+			t.Errorf("read %s: got %q, want %q", path, got, parentMarker)
+		}
 	}
 }

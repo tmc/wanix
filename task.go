@@ -322,6 +322,16 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 	if parent != nil {
 		p.parent = parent
 		p.ns = parent.ns.Clone(ctx)
+		// Inherit parent's stdio so server-side spawners (rc, etc.) can read
+		// child stdout/stderr without rebinding. Markup-spawned tasks have
+		// fd/0,1,2 bound by elements/task.js; without this inherit, only
+		// markup-spawned tasks have working stdio. Children may rebind before
+		// writing "start" to ctl.
+		for _, fd := range []string{"0", "1", "2"} {
+			src := "#task/" + parent.ID() + "/fd/" + fd
+			dst := "#task/" + rid + "/fd/" + fd
+			_ = p.ns.Bind(p.ns, src, dst)
+		}
 	} else {
 		p.ns = vfs.New(ctx)
 	}
