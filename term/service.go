@@ -36,7 +36,20 @@ func (c *programFile) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Resource is one terminal instance (paths data, program, winch).
+// Resource is one terminal instance with three paths: data, program, and winch.
+//
+// data and program are the two ends of a single full-duplex in-memory pipe,
+// named after which side of the terminal owns each end. The terminal element
+// (xterm) reads and writes data; the program (a task whose fd/0/1/2 is bound
+// to program) reads and writes program. Because the underlying pipe is
+// crossover-wired, bytes written to one path are read from the other:
+//
+//   write data    -> read program  (terminal-to-program input, e.g. keystrokes)
+//   write program -> read data     (program-to-terminal output, e.g. stdout)
+//
+// programFile.Write inserts CR before LF so program output is rendered
+// correctly on the terminal display.
+//
 // MapFS is embedded so ResolveFS reaches the signal FS (for fs.OpenFile with O_WRONLY, etc.).
 type Resource struct {
 	fskit.MapFS
