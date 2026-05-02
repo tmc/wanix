@@ -1,7 +1,6 @@
 package shell
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -72,34 +71,6 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
-}
-
-func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin io.Reader, stderr io.Writer) error {
-	scanner := bufio.NewScanner(stdin)
-	for {
-		fmt.Fprint(stderr, "rc% ")
-		if !scanner.Scan() {
-			if err := scanner.Err(); err != nil {
-				return err
-			}
-			return nil
-		}
-		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if err := runSource(ctx, r, parser, "<stdin>", strings.NewReader(line+"\n")); err != nil {
-			var status interp.ExitStatus
-			if errors.As(err, &status) {
-				fmt.Fprintf(stderr, "exit status %d\n", status)
-				continue
-			}
-			return err
-		}
-		if r.Exited() {
-			return nil
-		}
-	}
 }
 
 func runSource(ctx context.Context, r *interp.Runner, parser *syntax.Parser, name string, src io.Reader) error {
