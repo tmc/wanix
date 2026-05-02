@@ -333,10 +333,14 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 			src := "#task/" + parent.ID() + "/fd/" + fd
 			dst := "#task/" + rid + "/fd/" + fd
 			if err := parent.ns.Bind(parent.ns, src, dst); err != nil {
-				log.Printf("task: inherit fd %s into parent ns: %v", fd, err)
+				log.Printf("task: inherit fd %s into parent ns (%s -> %s): %v", fd, src, dst, err)
+			} else {
+				log.Printf("task: inherit fd %s into parent ns (%s -> %s): ok", fd, src, dst)
 			}
 			if err := p.ns.Bind(p.ns, src, dst); err != nil {
-				log.Printf("task: inherit fd %s into child ns: %v", fd, err)
+				log.Printf("task: inherit fd %s into child ns (%s -> %s): %v", fd, src, dst, err)
+			} else {
+				log.Printf("task: inherit fd %s into child ns (%s -> %s): ok", fd, src, dst)
 			}
 		}
 	} else {
