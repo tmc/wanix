@@ -69,11 +69,60 @@ func TestSpawnedTaskInheritsParentFDs(t *testing.T) {
 		path := "#task/" + rid + "/fd/" + fd
 		got, err := fs.ReadFile(child.Namespace(), path)
 		if err != nil {
-			t.Errorf("read %s: %v", path, err)
+			t.Errorf("read %s from child ns: %v", path, err)
 			continue
 		}
 		if string(got) != string(parentMarker) {
-			t.Errorf("read %s: got %q, want %q", path, got, parentMarker)
+			t.Errorf("read %s from child ns: got %q, want %q", path, got, parentMarker)
+		}
+	}
+}
+
+// TestParentSeesChildFDs confirms the inheritance is also visible from the
+// parent's namespace, which is where rc actually reads from. rc lives in the
+// parent task; when it spawns a child via #task/new/auto and opens
+// #task/<child>/fd/1 to capture stdout, the open goes through rc's own
+// namespace (parent), not the child's. If inheritance only populates the
+// child's ns view, rc still ENOENTs.
+func TestParentSeesChildFDs(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	parentMarker := []byte("parent-fd-payload\n")
+	for _, fd := range []string{"0", "1", "2"} {
+		src := fskit.MapFS{
+			"data": fskit.RawNode(parentMarker, 0644),
+		}
+		dst := "#task/" + root.ID() + "/fd/" + fd
+		if err := root.Namespace().Bind(src, "data", dst); err != nil {
+			t.Fatalf("bind parent fd/%s: %v", fd, err)
+		}
+	}
+
+	ctx := context.WithValue(context.Background(), TaskContextKey, root)
+	ridFile, err := fs.OpenContext(ctx, root.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatalf("open #task/new/auto: %v", err)
+	}
+	var ridBuf [16]byte
+	n, err := ridFile.Read(ridBuf[:])
+	if err != nil {
+		t.Fatalf("read rid: %v", err)
+	}
+	ridFile.Close()
+	rid := strings.TrimSpace(string(ridBuf[:n]))
+
+	for _, fd := range []string{"0", "1", "2"} {
+		path := "#task/" + rid + "/fd/" + fd
+		got, err := fs.ReadFile(root.Namespace(), path)
+		if err != nil {
+			t.Errorf("read %s from PARENT ns: %v", path, err)
+			continue
+		}
+		if string(got) != string(parentMarker) {
+			t.Errorf("read %s from PARENT ns: got %q, want %q", path, got, parentMarker)
 		}
 	}
 }
