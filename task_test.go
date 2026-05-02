@@ -157,6 +157,79 @@ func TestSpawnerCanWriteCmdPlain(t *testing.T) {
 	}
 }
 
+// TestThreeLevelInheritance mirrors the apptron prod stack: root spawns rc
+// (markup-spawned, JS binds rc's fd/0,1,2), rc spawns warren via
+// #task/new/auto. warren must inherit rc's fds at the path rc reads from
+// (#task/<warren>/fd/1, via rc.ns).
+//
+// This three-level shape exposes inheritance bugs that root→child cannot:
+// the JS bind into rc happens via api/bind.go (s.task.Namespace().Bind),
+// and the question is whether that binding actually populates rc.ns in a
+// way that my Alloc-time inheritance bind can read as a Bind src.
+func TestThreeLevelInheritance(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 1: root allocates rc (mimics markup <wanix-task type="auto" cmd="rc">).
+	rootCtx := context.WithValue(context.Background(), TaskContextKey, root)
+	ridFile, err := fs.OpenContext(rootCtx, root.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ridBuf [16]byte
+	n, _ := ridFile.Read(ridBuf[:])
+	ridFile.Close()
+	rcRid := strings.TrimSpace(string(ridBuf[:n]))
+	rc, err := root.Lookup(rcRid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: simulate elements/task.js:88-90 binding fd/0,1,2 into rc's ns.
+	// JS does `this.root.bind("#term/X/program", "#task/<rc>/fd/N")`, which
+	// routes to rc's syscaller and runs api/bind.go: s.task.Namespace().Bind(...)
+	// where s.task is rc.
+	rcMarker := []byte("rc-stdio-payload\n")
+	for _, fd := range []string{"0", "1", "2"} {
+		src := fskit.MapFS{"data": fskit.RawNode(rcMarker, 0644)}
+		dst := "#task/" + rcRid + "/fd/" + fd
+		if err := rc.Namespace().Bind(src, "data", dst); err != nil {
+			t.Fatalf("rc bind fd/%s: %v", fd, err)
+		}
+	}
+
+	// Step 3: rc allocates warren via #task/new/auto. Inheritance should
+	// bind rc's fd/0,1,2 onto warren's #task/<warren>/fd/N inside rc.ns.
+	rcCtx := context.WithValue(context.Background(), TaskContextKey, rc)
+	ridFile2, err := fs.OpenContext(rcCtx, rc.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatalf("rc open #task/new/auto: %v", err)
+	}
+	var ridBuf2 [16]byte
+	n2, _ := ridFile2.Read(ridBuf2[:])
+	ridFile2.Close()
+	warrenRid := strings.TrimSpace(string(ridBuf2[:n2]))
+	if warrenRid == rcRid {
+		t.Fatalf("warren rid %q should differ from rc rid %q", warrenRid, rcRid)
+	}
+
+	// Step 4: rc reads warren's stdout from rc's own ns (mirrors
+	// rc/shell/exec_wanix.go:43 os.Open(#task/<warren>/fd/1)).
+	for _, fd := range []string{"0", "1", "2"} {
+		path := "#task/" + warrenRid + "/fd/" + fd
+		got, err := fs.ReadFile(rc.Namespace(), path)
+		if err != nil {
+			t.Errorf("rc read %s: %v", path, err)
+			continue
+		}
+		if string(got) != string(rcMarker) {
+			t.Errorf("rc read %s: got %q, want %q", path, got, rcMarker)
+		}
+	}
+}
+
 // TestParentSeesChildFDs confirms the inheritance is also visible from the
 // parent's namespace, which is where rc actually reads from. rc lives in the
 // parent task; when it spawns a child via #task/new/auto and opens
