@@ -13,13 +13,17 @@ type OpenFileFS interface {
 
 // OpenFile is a helper that opens a file with the given flag and permissions if supported.
 func OpenFile(fsys FS, name string, flag int, perm FileMode) (f File, err error) {
-	if o, ok := fsys.(OpenFileFS); ok {
-		return o.OpenFile(name, flag, perm)
+	ctx := ContextFor(fsys)
+	if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) == 0 {
+		// Read-only path: prefer OpenContext so caller's ctx (which may
+		// carry per-task values) reaches the underlying FS. The OpenFile
+		// interface has no ctx, so OpenFileFS-backed resolution drops it.
+		ctx = WithReadOnly(ctx)
+		return OpenContext(ctx, fsys, name)
 	}
 
-	ctx := ContextFor(fsys)
-	if flag&os.O_RDONLY != 0 {
-		ctx = WithReadOnly(ctx)
+	if o, ok := fsys.(OpenFileFS); ok {
+		return o.OpenFile(name, flag, perm)
 	}
 
 	rfsys, rname, err := ResolveTo[OpenFileFS](fsys, ctx, name)

@@ -230,6 +230,77 @@ func TestThreeLevelInheritance(t *testing.T) {
 	}
 }
 
+// TestRCStyleAllocationViaOpenFile mirrors the prod failure: rc's
+// os.ReadFile("#task/new/auto") goes through api/open.go:openFile which
+// calls fs.OpenFile with O_RDONLY. fs.OpenFile previously resolved to
+// OpenFunc.OpenFile (no ctx parameter) which discarded ctx and called the
+// inner closure with context.Background() — so FromContext returned nil
+// and Alloc ran with parent=nil, producing a child task with no inherited
+// fds. The fix in fs/openfile.go routes read-only opens through
+// OpenContext, preserving the caller's ctx (which includes the rc task's
+// TaskContextKey from its ns.ctx). This test asserts ctx propagation is
+// preserved across the OpenFile entry point that rc actually uses.
+func TestRCStyleAllocationViaOpenFile(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Allocate rc as root's child via the new-handler path.
+	rootCtx := context.WithValue(context.Background(), TaskContextKey, root)
+	ridFile, err := fs.OpenContext(rootCtx, root.Namespace(), "#task/new/auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ridBuf [16]byte
+	n, _ := ridFile.Read(ridBuf[:])
+	ridFile.Close()
+	rcRid := strings.TrimSpace(string(ridBuf[:n]))
+	rc, err := root.Lookup(rcRid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bind rc's fd/0,1,2 the way JS does (mimics elements/task.js).
+	rcMarker := []byte("rc-stdio-payload\n")
+	for _, fd := range []string{"0", "1", "2"} {
+		src := fskit.MapFS{"data": fskit.RawNode(rcMarker, 0644)}
+		dst := "#task/" + rcRid + "/fd/" + fd
+		if err := rc.Namespace().Bind(src, "data", dst); err != nil {
+			t.Fatalf("rc bind fd/%s: %v", fd, err)
+		}
+	}
+
+	// Mirror api/open.go:openFile exactly: fs.OpenFile(rc.ns, path, O_RDONLY, 0).
+	// This is the entry point that was dropping ctx via OpenFunc.OpenFile.
+	allocFile, err := fs.OpenFile(rc.Namespace(), "#task/new/auto", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("rc OpenFile #task/new/auto: %v", err)
+	}
+	var ridBuf2 [16]byte
+	n2, _ := allocFile.Read(ridBuf2[:])
+	allocFile.Close()
+	warrenRid := strings.TrimSpace(string(ridBuf2[:n2]))
+	if warrenRid == rcRid {
+		t.Fatalf("warren rid %q should differ from rc rid %q", warrenRid, rcRid)
+	}
+
+	// rc must be able to read warren's stdout from rc's own ns. If ctx
+	// propagation is broken, warren was allocated with parent=nil and these
+	// reads ENOENT.
+	for _, fd := range []string{"0", "1", "2"} {
+		path := "#task/" + warrenRid + "/fd/" + fd
+		got, err := fs.ReadFile(rc.Namespace(), path)
+		if err != nil {
+			t.Errorf("rc read %s: %v", path, err)
+			continue
+		}
+		if string(got) != string(rcMarker) {
+			t.Errorf("rc read %s: got %q, want %q", path, got, rcMarker)
+		}
+	}
+}
+
 // TestParentSeesChildFDs confirms the inheritance is also visible from the
 // parent's namespace, which is where rc actually reads from. rc lives in the
 // parent task; when it spawns a child via #task/new/auto and opens
