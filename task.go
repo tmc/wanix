@@ -334,18 +334,13 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 			dst := "#task/" + rid + "/fd/" + fd
 			if err := parent.ns.Bind(parent.ns, src, dst); err != nil {
 				log.Printf("task: inherit fd %s into parent ns (%s -> %s): %v", fd, src, dst, err)
-			} else {
-				log.Printf("task: inherit fd %s into parent ns (%s -> %s): ok", fd, src, dst)
 			}
 			if err := p.ns.Bind(p.ns, src, dst); err != nil {
 				log.Printf("task: inherit fd %s into child ns (%s -> %s): %v", fd, src, dst, err)
-			} else {
-				log.Printf("task: inherit fd %s into child ns (%s -> %s): ok", fd, src, dst)
 			}
 		}
 	} else {
 		p.ns = vfs.New(ctx)
-		log.Printf("task: alloc rid %s with parent=nil (no fd inheritance, empty ns)", rid)
 	}
 	d.resources[rid] = p
 	return p, nil
@@ -364,12 +359,7 @@ func (d *TaskFS) ResolveFS(ctx context.Context, name string) (fs.FS, string, err
 			return &fskit.FuncFile{
 				Node: fskit.Entry(name, 0555),
 				ReadFunc: func(n *fskit.Node) error {
-					t, ok := FromContext(ctx)
-					if ok {
-						log.Printf("task: new/%s read with parent=%s", name, t.ID())
-					} else {
-						log.Printf("task: new/%s read with NO parent in ctx", name)
-					}
+					t, _ := FromContext(ctx)
 					p, err := d.Alloc(name, t)
 					if err != nil {
 						return err
