@@ -75,20 +75,36 @@ func TestWasmHeadHasMarker(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "marker just inside scan limit is found",
-			data:   append(bytes.Repeat([]byte{0}, wasmDetectScanLimit-len(gojsMarker)), gojsMarker...),
+			name: "marker just inside scan limit is found",
+			data: append(append([]byte{}, minimalWasmHeader...),
+				append(bytes.Repeat([]byte{0}, wasmDetectScanLimit-len(minimalWasmHeader)-len(gojsMarker)), gojsMarker...)...),
 			marker: gojsMarker,
 			want:   true,
 		},
 		{
-			name:   "marker just past scan limit is not found",
-			data:   append(bytes.Repeat([]byte{0}, wasmDetectScanLimit), gojsMarker...),
+			name: "marker just past scan limit is not found",
+			data: append(append([]byte{}, minimalWasmHeader...),
+				append(bytes.Repeat([]byte{0}, wasmDetectScanLimit-len(minimalWasmHeader)), gojsMarker...)...),
 			marker: gojsMarker,
 			want:   false,
 		},
 		{
 			name:   "bare 'gojs' substring without length prefix is not the gojs marker",
 			data:   wasmFixture("the word gojs is mentioned in passing"),
+			marker: gojsMarker,
+			want:   false,
+		},
+		{
+			// Guards against text files / shell scripts being misclassified
+			// as wasm just because they contain a marker substring.
+			name:   "non-wasm data with marker bytes is rejected by magic check",
+			data:   []byte("#!/bin/sh\nwasi_snapshot_preview1\n"),
+			marker: wasiMarkerPreview1,
+			want:   false,
+		},
+		{
+			name:   "non-wasm data with gojs marker bytes is rejected by magic check",
+			data:   append([]byte("not a wasm file: "), gojsMarker...),
 			marker: gojsMarker,
 			want:   false,
 		},

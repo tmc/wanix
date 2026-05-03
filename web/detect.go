@@ -2,13 +2,17 @@ package web
 
 import (
 	"bytes"
-	"strings"
 
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs"
 )
 
 const wasmDetectScanLimit = 16384
+
+// wasmMagic is the 8-byte preamble of every wasm module: "\0asm" + version 1.
+// We check this before scanning for runtime markers so a bare PATH name like
+// "warren" (no .wasm suffix) is still classified by content, not extension.
+var wasmMagic = []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
 
 // Markers used to identify wasm task runtime expectations by inspecting the
 // raw bytes of the binary's import section. The wasm import format encodes
@@ -25,6 +29,9 @@ var (
 )
 
 func wasmHeadHasMarker(data, marker []byte) bool {
+	if !bytes.HasPrefix(data, wasmMagic) {
+		return false
+	}
 	if len(data) > wasmDetectScanLimit {
 		data = data[:wasmDetectScanLimit]
 	}
@@ -32,9 +39,6 @@ func wasmHeadHasMarker(data, marker []byte) bool {
 }
 
 func taskWasmHasMarker(t *wanix.Task, marker []byte) bool {
-	if !strings.HasSuffix(t.Arg(0), ".wasm") {
-		return false
-	}
 	data, err := fs.ReadFile(t.Namespace(), t.Arg(0))
 	if err != nil {
 		return false
