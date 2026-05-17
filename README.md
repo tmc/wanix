@@ -50,6 +50,8 @@ Wanix has a number of built-in file services:
 
 For now, see [api/](api/) and [api/handle.js](api/handle.js).
 
+For migration and restore boundaries, see [docs/migration.md](docs/migration.md).
+
 ## Contributing
 
 We'd love your contributions! Take a look at our [issues](https://github.com/tractordev/wanix/issues) to see how you can help out. You can also ask questions and participate in [discussions](https://github.com/tractordev/wanix/discussions), however right now most discussion takes place in our [Discord](https://discord.gg/nbrwNXVvVa).
