@@ -548,11 +548,11 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 	}{
 		{
 			name: "export bundle",
-			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?request\.archive.*?this\.archive\(\s*source\s*\).*?return\s+\{\s*manifest\s*,\s*archives\s*\}`,
+			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?return\s+\{\s*manifest\s*,\s*archives\s*\}`,
 		},
 		{
 			name: "import bundle",
-			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?bundle\.manifest.*?this\.importArchive\(\s*source\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\)`,
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?desc\.source\s*=\s*target.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\)`,
 		},
 		{
 			name: "archive data",
@@ -600,7 +600,7 @@ h.importArchive = async (name, data) => {
 	return {entries: 1};
 };
 h.restoreBundleManifest = async manifest => {
-	calls.push(["restoreBundleManifest", manifest.version]);
+	calls.push(["restoreBundleManifest", manifest.version, manifest.filesystems.map(desc => [desc.id, desc.source])]);
 	return {tasks: []};
 };
 
@@ -616,12 +616,23 @@ await h.importBundle({
 	manifest: bundle.manifest,
 	archives: [{id: "rootfs", source: "mnt", data: new ArrayBuffer(2)}],
 });
+await h.importBundle({
+	manifest: {
+		version: "wanix-migration-v1",
+		mode: "migrate",
+		filesystems: [{id: "exportfs", kind: "memfs", source: "#task/2/export"}],
+		tasks: [{id: "2", kind: "auto", export_fs_id: "exportfs"}],
+	},
+	archives: [{id: "exportfs", source: "#task/2/export", target: "exports/2", data: new Uint8Array([7])}],
+});
 const got = JSON.stringify(calls);
 const want = JSON.stringify([
 	["bundleManifest", filesystems],
 	["archive", "mnt"],
 	["importArchive", "mnt", [0, 0]],
-	["restoreBundleManifest", "wanix-migration-v1"],
+	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["taskfs", "#task"]]],
+	["importArchive", "exports/2", [7]],
+	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]]],
 ]);
 if (got !== want) {
 	throw new Error("calls = " + got + ", want " + want);

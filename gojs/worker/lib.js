@@ -4059,11 +4059,16 @@ var WanixHandle = class {
         }
         continue;
       }
-      archives.push({
+      const target2 = bundleArchiveTarget(desc, request);
+      const archive = {
         id: desc.id,
         source,
         data: await this.archive(source)
-      });
+      };
+      if (target2 && target2 !== source) {
+        archive.target = target2;
+      }
+      archives.push(archive);
     }
     return { manifest, archives };
   }
@@ -4072,18 +4077,22 @@ var WanixHandle = class {
     if (!bundle || typeof bundle !== "object" || !bundle.manifest) {
       throw new Error("importBundle: invalid bundle");
     }
-    const manifest = bundle.manifest;
-    const filesystems = manifest.filesystems || [];
+    const manifest = normalizeBundleManifest(bundle.manifest);
+    manifest.filesystems = (manifest.filesystems || []).map((desc) => ({ ...desc }));
+    const filesystems = manifest.filesystems;
     for (const archive of bundle.archives || []) {
       const desc = filesystems.find((desc2) => desc2.id === archive.id);
       if (!desc) {
         throw new Error(`importBundle: unknown filesystem ${archive.id}`);
       }
-      const source = archive.source || desc.source;
-      if (!source) {
-        throw new Error(`importBundle: filesystem ${archive.id} missing source`);
+      const target2 = bundleArchiveTarget(desc, archive) || archive.source || desc.source;
+      if (!target2) {
+        throw new Error(`importBundle: filesystem ${archive.id} missing target`);
       }
-      await this.importArchive(source, bundleArchiveData(archive.data));
+      if (desc.source !== target2) {
+        desc.source = target2;
+      }
+      await this.importArchive(target2, bundleArchiveData(archive.data));
     }
     return await this.restoreBundleManifest(manifest);
   }
@@ -4230,6 +4239,12 @@ function bundleArchiveSource(desc, request) {
     return request.archive;
   }
   return "";
+}
+function bundleArchiveTarget(desc, request) {
+  if (!request) {
+    return "";
+  }
+  return request.archive_target || request.target || request.restore_source || "";
 }
 function bundleArchiveData(data) {
   if (data instanceof Uint8Array || typeof data === "string") {
