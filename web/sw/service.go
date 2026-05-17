@@ -26,22 +26,39 @@ type Service struct {
 	root   *wanix.Task
 }
 
-func Activate(ch js.Value, root *wanix.Task) *Service {
-	reg := jsutil.Await(jsutil.Get("navigator.serviceWorker").Call("getRegistration"))
-	if reg.IsUndefined() {
-		swPath := "./wanix-sw.js"
-		jsutil.Await(jsutil.Get("navigator.serviceWorker").Call("register", swPath, map[string]any{"type": "module"}))
-		reg = jsutil.Await(jsutil.Get("navigator.serviceWorker.ready"))
+func Activate(script, scope string, root *wanix.Task) (*Service, error) {
+	serviceWorker := jsutil.Get("navigator.serviceWorker")
+	if serviceWorker.IsUndefined() {
+		return nil, fs.ErrNotSupported
+	}
+	if script == "" {
+		script = "./wanix-sw.js"
+	}
+	opts := map[string]any{"type": "module"}
+	if scope != "" {
+		opts["scope"] = scope
+	}
+	if _, err := jsutil.AwaitErr(serviceWorker.Call("register", script, opts)); err != nil {
+		return nil, err
+	}
+	reg, err := jsutil.AwaitErr(serviceWorker.Get("ready"))
+	if err != nil {
+		return nil, err
+	}
+	active := reg.Get("active")
+	if active.IsUndefined() || active.IsNull() {
+		return nil, fs.ErrNotExist
 	}
 
+	ch := js.Global().Get("MessageChannel").New()
 	d := &Service{
-		active: reg.Get("active"),
+		active: active,
 		root:   root,
 	}
 	ch.Get("port2").Set("onmessage", js.FuncOf(d.handleMessage))
 
-	reg.Get("active").Call("postMessage", map[string]any{"listen": ch.Get("port1")}, []any{ch.Get("port1")})
-	return d
+	active.Call("postMessage", map[string]any{"listen": ch.Get("port1")}, []any{ch.Get("port1")})
+	return d, nil
 }
 
 func (d *Service) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {
@@ -132,8 +149,8 @@ func (d *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("X-Service-Worker", r.Header.Get("X-Service-Worker"))
 	w.Header().Add("Cross-Origin-Opener-Policy", "same-origin")
 	w.Header().Add("Cross-Origin-Embedder-Policy", "require-corp")
-	if strings.HasPrefix(r.URL.Path, "/:/") {
-		path := strings.TrimPrefix(r.URL.Path, "/:/")
+	path, ok := servicePath(r.URL.Path)
+	if ok {
 
 		entries, err := fs.ReadDir(d.root.NS(), strings.TrimSuffix(path, "/"))
 		if err == nil {
@@ -172,6 +189,16 @@ func (d *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusContinue)
+}
+
+func servicePath(urlPath string) (string, bool) {
+	if strings.HasPrefix(urlPath, "/:/") {
+		return strings.TrimPrefix(urlPath, "/:/"), true
+	}
+	if i := strings.Index(urlPath, "/:/"); i >= 0 {
+		return strings.TrimPrefix(urlPath[i:], "/:/"), true
+	}
+	return "", false
 }
 
 type nopReadSeeker struct {

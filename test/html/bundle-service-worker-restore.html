@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-service-worker-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-service-worker-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-service-worker-restore" debug>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-service-worker-restore" service-worker="./wanix-sw.js" service-worker-scope="./" debug>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function controlled() {
+            if (!("serviceWorker" in navigator)) {
+                throw new Error("service workers unavailable");
+            }
+            await navigator.serviceWorker.ready;
+            const reloadKey = "wanix-service-worker-restore-reloaded";
+            if (sessionStorage.getItem(reloadKey) !== "1") {
+                sessionStorage.setItem(reloadKey, "1");
+                window.location.reload();
+                await new Promise(() => {});
+            }
+            if (navigator.serviceWorker.controller) {
+                sessionStorage.removeItem(reloadKey);
+                return;
+            }
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error("service worker controller timeout")), 5000);
+                navigator.serviceWorker.addEventListener("controllerchange", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                }, {once: true});
+            });
+            sessionStorage.removeItem(reloadKey);
+        }
+
+        const progress = {};
+        window.wanixBundleServiceWorkerResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+            await controlled();
+
+            progress.step = "seed";
+            await source.root.bindMemFS("public");
+            await target.root.bindMemFS("public");
+            await source.root.writeFile("public/proof.txt", "service-worker-restored\n");
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "publicfs", source: "public"},
+            ]));
+
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "fetch";
+            const url = new URL("./:/public/proof.txt?cachebust=" + Date.now(), window.location.href);
+            const response = await fetch(url, {cache: "no-store"});
+            const body = await response.text();
+            const state = await target.root.readText("#web/sw/state");
+            const result = {
+                ok: response.ok &&
+                    response.headers.get("X-Service-Worker") &&
+                    body === "service-worker-restored\n" &&
+                    state.trim() === "activated",
+                status: response.status,
+                serviceHeader: response.headers.get("X-Service-Worker"),
+                state: state.trim(),
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+                tasks: restore.tasks || [],
+                body,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>

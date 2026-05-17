@@ -17,6 +17,8 @@ import (
 	"tractor.dev/wanix/web/dl"
 	"tractor.dev/wanix/web/dom"
 	"tractor.dev/wanix/web/fsa"
+	"tractor.dev/wanix/web/sw"
+	"tractor.dev/wanix/web/sys"
 	"tractor.dev/wanix/web/worker"
 )
 
@@ -35,15 +37,34 @@ func New(root *wanix.Task) fskit.MapFS {
 	} else {
 		webfs["opfs"] = opfs
 	}
-	// if !runtime.Instance().Get("_sw").IsUndefined() {
-	// 	webfs["sw"] = sw.Activate(runtime.Instance().Get("_sw"), k)
-	// 	webfs["sw"] = sw.Activate(runtime.Instance().Get("_sw"), k)
-	// }
+	if script, scope, ok := serviceWorkerConfig(); ok {
+		service, err := sw.Activate(script, scope, root)
+		if err != nil {
+			log.Println("service worker:", err)
+		} else {
+			webfs["sw"] = service
+		}
+	}
 
 	root.Register("js", &JSDriver{Workers: workerfs, Root: root})
 	root.Register("wasi", &wasi.Driver{Workers: workerfs})
 	root.Register("gojs", &gojs.Driver{Workers: workerfs})
 	return webfs
+}
+
+func serviceWorkerConfig() (script, scope string, ok bool) {
+	el := sys.Element()
+	if !el.Call("hasAttribute", "service-worker").Bool() {
+		return "", "", false
+	}
+	script = "./wanix-sw.js"
+	if attr := el.Call("getAttribute", "service-worker"); attr.Type() == js.TypeString && attr.String() != "" {
+		script = attr.String()
+	}
+	if attr := el.Call("getAttribute", "service-worker-scope"); attr.Type() == js.TypeString {
+		scope = attr.String()
+	}
+	return script, scope, true
 }
 
 type dataFile struct {
