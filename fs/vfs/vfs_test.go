@@ -3,9 +3,12 @@ package vfs
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"path"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -13,6 +16,7 @@ import (
 
 	"tractor.dev/wanix/fs/fskit"
 	"tractor.dev/wanix/fs/memfs"
+	"tractor.dev/wanix/migration"
 )
 
 func TestNamespace(t *testing.T) {
@@ -332,6 +336,86 @@ func TestBindingModes(t *testing.T) {
 
 }
 
+func TestExportManifestBindingOrder(t *testing.T) {
+	a := newManifestFS("a")
+	b := newManifestFS("b")
+	c := newManifestFS("c")
+
+	ns := New(context.Background())
+	if err := ns.Bind(a, ".", "mnt", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(b, ".", "mnt", ModeAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(c, ".", "mnt", ModeBefore); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := ns.ExportManifest("task1", manifestResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Binds) != 3 {
+		t.Fatalf("got %d binds, want 3: %#v", len(manifest.Binds), manifest.Binds)
+	}
+	wantIDs := []string{"b", "a", "c"}
+	wantModes := []string{"after", "replace", "before"}
+	for i, bind := range manifest.Binds {
+		if bind.SrcFSID != wantIDs[i] || bind.Mode != wantModes[i] || bind.Index != i {
+			t.Fatalf("bind %d = %#v, want id %q mode %q index %d", i, bind, wantIDs[i], wantModes[i], i)
+		}
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "manifestFS") {
+		t.Fatalf("manifest serialized filesystem implementation detail: %s", data)
+	}
+}
+
+func TestExportManifestRootAndSystemBinds(t *testing.T) {
+	root := newManifestFS("root")
+	task := newManifestFS("task")
+
+	ns := New(context.Background())
+	if err := ns.Bind(root, ".", ".", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(task, ".", "#task", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := ns.ExportManifest("task1", manifestResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]migration.BindManifest{}
+	for _, bind := range manifest.Binds {
+		seen[bind.DstPath] = bind
+	}
+	if !seen["."].Root || seen["."].System {
+		t.Fatalf("root bind shape = %#v", seen["."])
+	}
+	if !seen["#task"].System || seen["#task"].Root {
+		t.Fatalf("system bind shape = %#v", seen["#task"])
+	}
+}
+
+func TestExportManifestUnknownFilesystem(t *testing.T) {
+	ns := New(context.Background())
+	if err := ns.Bind(newManifestFS("known"), ".", "mnt", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ns.ExportManifest("task1", func(fs.FS) (string, error) {
+		return "", nil
+	})
+	if !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("ExportManifest error = %v, want ErrUnknownFilesystem", err)
+	}
+}
+
 func TestSynthesizedDirectories(t *testing.T) {
 	// Create test filesystem
 	testFS := fstest.MapFS{
@@ -441,6 +525,36 @@ func TestSynthesizedDirectories(t *testing.T) {
 			}
 		})
 	}
+}
+
+type manifestFS struct {
+	id    string
+	files fskit.MapFS
+}
+
+func newManifestFS(id string) *manifestFS {
+	return &manifestFS{
+		id: id,
+		files: fskit.MapFS{
+			"file.txt": fskit.RawNode([]byte(id)),
+		},
+	}
+}
+
+func (f *manifestFS) Open(name string) (fs.File, error) {
+	return f.files.Open(name)
+}
+
+func (f *manifestFS) ResolveFS(context.Context, string) (fs.FS, string, error) {
+	return f, ".", nil
+}
+
+func manifestResolver(fsys fs.FS) (string, error) {
+	f, ok := fsys.(*manifestFS)
+	if !ok {
+		return "", migration.ErrUnknownFilesystem
+	}
+	return f.id, nil
 }
 
 func TestMkdirOnLeaf(t *testing.T) {
