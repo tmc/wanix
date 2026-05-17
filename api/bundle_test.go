@@ -194,6 +194,61 @@ func TestRestoreBundleManifestRPCBoundary(t *testing.T) {
 	}
 }
 
+func TestRestoreBundleManifestRPCRestoresRootInPlace(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	client := newBundleAPIClient(t, root)
+
+	manifest := rootInPlaceBundleManifest()
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Tasks []string `json:"tasks"`
+	}
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tasks) != 1 || result.Tasks[0] != "1" {
+		t.Fatalf("restored tasks = %#v, want root task", result.Tasks)
+	}
+	if root.Alias() != "migrated-root" || root.Cmd() != "rc -c migrated" || root.Dir() != "mnt" {
+		t.Fatalf("root state = alias %q cmd %q dir %q", root.Alias(), root.Cmd(), root.Dir())
+	}
+	id, err := fs.ReadFile(root.NS(), "#task/migrated-root/id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(id) != "1\n" {
+		t.Fatalf("root alias id = %q, want 1\\n", id)
+	}
+}
+
+func TestRestoreBundleManifestRPCRollsBackRootInPlace(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	client := newBundleAPIClient(t, root)
+
+	manifest := rootInPlaceBundleManifest()
+	manifest.Tasks = append(manifest.Tasks, migration.TaskManifest{
+		ID:   "2",
+		Kind: "missing",
+	})
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result any
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err == nil {
+		t.Fatal("RestoreBundleManifest error = nil, want child task failure")
+	}
+	if root.Alias() != "" || root.Cmd() != "" || root.Dir() != "" {
+		t.Fatalf("root state after rollback = alias %q cmd %q dir %q", root.Alias(), root.Cmd(), root.Dir())
+	}
+	if _, err := fs.ReadFile(root.NS(), "#task/migrated-root/id"); err == nil {
+		t.Fatal("migrated-root alias survived rollback")
+	}
+}
+
 func TestRestoreBundleManifestRPCRestoresVMDescriptors(t *testing.T) {
 	root, _ := newBundleAPIRoot(t)
 	dev := bindBundleAPIVMDevice(t, root)
@@ -424,6 +479,58 @@ func TestDecodeJSONArg(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].ID != "rootfs" || got[0].Source != "mnt" {
 		t.Fatalf("decoded = %#v", got)
+	}
+}
+
+func rootInPlaceBundleManifest() migration.BundleManifest {
+	return migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:     "rootfs",
+			Kind:   "memfs",
+			Source: "mnt",
+		}, {
+			ID:     "taskfs",
+			Kind:   "taskfs",
+			Source: "#task",
+		}, {
+			ID:     "wanixfs",
+			Kind:   "system",
+			Source: "#wanix",
+		}},
+		Tasks: []migration.TaskManifest{{
+			ID:        "1",
+			Kind:      "auto",
+			Alias:     "migrated-root",
+			Command:   "rc -c migrated",
+			Directory: "mnt",
+			Env:       []string{"A=B"},
+			Namespace: migration.NamespaceManifest{
+				TaskID: "1",
+				Binds: []migration.BindManifest{{
+					DstPath: "mnt",
+					SrcFSID: "rootfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+				}, {
+					DstPath: "#task",
+					SrcFSID: "taskfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+					System:  true,
+				}, {
+					DstPath: "#wanix",
+					SrcFSID: "wanixfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+					System:  true,
+				}},
+			},
+		}},
 	}
 }
 

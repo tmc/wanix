@@ -224,15 +224,41 @@ func (d *TaskFS) importBundleManifest(ctx context.Context, manifest migration.Bu
 	}
 	startNextID := d.currentNextID()
 	tasks := make([]*Task, 0, len(manifest.Tasks))
+	imported := make([]*Task, 0, len(manifest.Tasks))
+	var existing []taskRestore
+	fail := func(err error) ([]*Task, error) {
+		for i := len(existing) - 1; i >= 0; i-- {
+			existing[i].rollback()
+		}
+		d.rollbackImportedTasks(imported, startNextID)
+		return nil, err
+	}
 	for _, taskManifest := range manifest.Tasks {
+		if parent != nil && taskManifest.ID == parent.ID() {
+			restore, err := d.restoreExistingTask(ctx, parent, taskManifest, lookup)
+			if err != nil {
+				return fail(err)
+			}
+			existing = append(existing, restore)
+			tasks = append(tasks, parent)
+			continue
+		}
 		task, err := d.ImportManifest(ctx, taskManifest, parent, lookup)
 		if err != nil {
-			d.rollbackImportedTasks(tasks, startNextID)
-			return nil, err
+			return fail(err)
 		}
 		tasks = append(tasks, task)
+		imported = append(imported, task)
+	}
+	for _, restore := range existing {
+		restore.commit()
 	}
 	return tasks, nil
+}
+
+type taskRestore struct {
+	rollback func()
+	commit   func()
 }
 
 func (d *TaskFS) currentNextID() int {

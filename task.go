@@ -729,6 +729,98 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 	return task, nil
 }
 
+func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest migration.TaskManifest, lookup vfs.FSIDLookup) (taskRestore, error) {
+	id, err := strconv.Atoi(manifest.ID)
+	if err != nil || id <= 0 || manifest.ID != task.ID() {
+		return taskRestore{}, fmt.Errorf("restore task %q: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if manifest.Kind == "" {
+		return taskRestore{}, fmt.Errorf("restore task %s: %w", manifest.ID, fs.ErrInvalid)
+	}
+
+	d.mu.Lock()
+	driver, ok := d.types[manifest.Kind]
+	if !ok {
+		d.mu.Unlock()
+		return taskRestore{}, fmt.Errorf("restore task %s kind %q: %w", manifest.ID, manifest.Kind, fs.ErrNotExist)
+	}
+	if manifest.Alias != "" {
+		if existing, exists := d.aliases[manifest.Alias]; exists && existing != task {
+			d.mu.Unlock()
+			return taskRestore{}, fmt.Errorf("restore task alias %q: %w", manifest.Alias, fs.ErrExist)
+		}
+	}
+	d.mu.Unlock()
+
+	task.mu.Lock()
+	oldDriver := task.driver
+	oldAlias := task.alias
+	oldKind := task.kind
+	oldCmd := task.cmd
+	oldEnv := append([]string(nil), task.env...)
+	oldDir := task.dir
+	oldNS := task.ns
+	oldFDs := task.fds
+	oldFDIdx := task.fdIdx
+	task.mu.Unlock()
+
+	taskCtx := context.WithValue(ctx, TaskContextKey, task)
+	namespace, err := vfs.ImportManifest(taskCtx, manifest.Namespace, lookup)
+	if err != nil {
+		return taskRestore{}, err
+	}
+	tmp := &Task{
+		ns:    namespace,
+		fds:   make(map[int]*openFile),
+		fdIdx: 3,
+	}
+	if err := tmp.importFDManifests(manifest.FDs); err != nil {
+		return taskRestore{}, err
+	}
+	newFDs := tmp.fds
+	newFDIdx := tmp.fdIdx
+
+	apply := func(driver TaskDriver, alias, kind, cmd string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int) {
+		task.mu.Lock()
+		task.driver = driver
+		task.alias = alias
+		task.kind = kind
+		task.cmd = cmd
+		task.env = append([]string(nil), env...)
+		task.dir = dir
+		task.ns = ns
+		task.fds = fds
+		task.fdIdx = fdIdx
+		task.mu.Unlock()
+	}
+	setAlias := func(old, new string) {
+		d.mu.Lock()
+		if old != "" {
+			if existing, ok := d.aliases[old]; ok && existing == task {
+				delete(d.aliases, old)
+			}
+		}
+		if new != "" {
+			d.aliases[new] = task
+		}
+		d.mu.Unlock()
+	}
+
+	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx)
+	setAlias(oldAlias, manifest.Alias)
+
+	return taskRestore{
+		rollback: func() {
+			closeOpenFiles(newFDs)
+			apply(oldDriver, oldAlias, oldKind, oldCmd, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx)
+			setAlias(manifest.Alias, oldAlias)
+		},
+		commit: func() {
+			closeOpenFiles(oldFDs)
+		},
+	}, nil
+}
+
 func (d *TaskFS) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {
 	m := fskit.MapFS{
 		"new": fskit.OpenFunc(func(ctx context.Context, name string) (fs.File, error) {
