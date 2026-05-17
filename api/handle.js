@@ -80,6 +80,14 @@ export class WanixHandle {
         return (await this.peer.call("Archive", [name])).value;
     }
 
+    async importArchive(name=".", contents) {
+        this.logger(`importArchive ${name} len(${contents.length})`);
+        if (typeof contents === "string") {
+            contents = (new TextEncoder()).encode(contents);
+        }
+        return (await this.peer.call("ImportArchive", [name, contents])).value;
+    }
+
     async rename(oldname, newname) {
         this.logger(`rename ${oldname} ${newname}`);
         await this.peer.call("Rename", [oldname, newname]);
