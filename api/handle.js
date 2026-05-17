@@ -101,6 +101,50 @@ export class WanixHandle {
         return (await this.peer.call("RestoreBundleManifest", [manifest])).value;
     }
 
+    async exportBundle(filesystems=[]) {
+        this.logger(`exportBundle filesystems(${filesystems.length})`);
+        const manifest = await this.bundleManifest(filesystems);
+        const requests = new Map(filesystems.map(desc => [desc.id, desc]));
+        const archives = [];
+        for (const desc of manifest.filesystems || []) {
+            const request = requests.get(desc.id) || desc;
+            const source = bundleArchiveSource(desc, request);
+            if (!source) {
+                if (request.archive) {
+                    throw new Error(`exportBundle: filesystem ${desc.id} missing archive source`);
+                }
+                continue;
+            }
+            archives.push({
+                id: desc.id,
+                source,
+                data: await this.archive(source),
+            });
+        }
+        return {manifest, archives};
+    }
+
+    async importBundle(bundle) {
+        this.logger(`importBundle`);
+        if (!bundle || typeof bundle !== "object" || !bundle.manifest) {
+            throw new Error("importBundle: invalid bundle");
+        }
+        const manifest = bundle.manifest;
+        const filesystems = manifest.filesystems || [];
+        for (const archive of bundle.archives || []) {
+            const desc = filesystems.find(desc => desc.id === archive.id);
+            if (!desc) {
+                throw new Error(`importBundle: unknown filesystem ${archive.id}`);
+            }
+            const source = archive.source || desc.source;
+            if (!source) {
+                throw new Error(`importBundle: filesystem ${archive.id} missing source`);
+            }
+            await this.importArchive(source, bundleArchiveData(archive.data));
+        }
+        return await this.restoreBundleManifest(manifest);
+    }
+
     async rename(oldname, newname) {
         this.logger(`rename ${oldname} ${newname}`);
         await this.peer.call("Rename", [oldname, newname]);
@@ -249,6 +293,32 @@ export class WanixHandle {
             },
         });
     }
+}
+
+function bundleArchiveSource(desc, request) {
+    if (!request) {
+        return "";
+    }
+    if (request.archive === true) {
+        return desc.source;
+    }
+    if (typeof request.archive === "string") {
+        return request.archive;
+    }
+    return "";
+}
+
+function bundleArchiveData(data) {
+    if (data instanceof Uint8Array || typeof data === "string") {
+        return data;
+    }
+    if (data instanceof ArrayBuffer) {
+        return new Uint8Array(data);
+    }
+    if (ArrayBuffer.isView(data)) {
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    return data;
 }
 
 // for safari

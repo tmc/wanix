@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -532,6 +533,97 @@ func TestHandleJSBundleManifestWrappers(t *testing.T) {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
 			t.Fatalf("handle.js missing %s wrapper", tt.name)
 		}
+	}
+}
+
+func TestHandleJSBundleHarnessWrappers(t *testing.T) {
+	data, err := os.ReadFile("handle.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	for _, tt := range []struct {
+		name string
+		re   string
+	}{
+		{
+			name: "export bundle",
+			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?request\.archive.*?this\.archive\(\s*source\s*\).*?return\s+\{\s*manifest\s*,\s*archives\s*\}`,
+		},
+		{
+			name: "import bundle",
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?bundle\.manifest.*?this\.importArchive\(\s*source\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\)`,
+		},
+		{
+			name: "archive data",
+			re:   `(?s)function\s+bundleArchiveData\s*\(\s*data\s*\).*?data\s+instanceof\s+Uint8Array.*?data\s+instanceof\s+ArrayBuffer.*?ArrayBuffer\.isView\(\s*data\s*\)`,
+		},
+	} {
+		if !regexp.MustCompile(tt.re).MatchString(src) {
+			t.Fatalf("handle.js missing %s wrapper", tt.name)
+		}
+	}
+}
+
+func TestHandleJSBundleHarnessSmoke(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not found")
+	}
+	script := `
+import {WanixHandle} from "./api/handle.js";
+
+const h = Object.create(WanixHandle.prototype);
+const calls = [];
+h.logger = () => {};
+h.bundleManifest = async filesystems => {
+	calls.push(["bundleManifest", filesystems]);
+	return {
+		version: "wanix-migration-v1",
+		mode: "migrate",
+		filesystems: filesystems.map(({archive, ...desc}) => desc),
+	};
+};
+h.archive = async name => {
+	calls.push(["archive", name]);
+	return new Uint8Array([1, 2, 3]);
+};
+h.importArchive = async (name, data) => {
+	calls.push(["importArchive", name, Array.from(data)]);
+	return {entries: 1};
+};
+h.restoreBundleManifest = async manifest => {
+	calls.push(["restoreBundleManifest", manifest.version]);
+	return {tasks: []};
+};
+
+const filesystems = [
+	{id: "rootfs", kind: "memfs", source: "mnt", archive: true},
+	{id: "taskfs", kind: "taskfs", source: "#task"},
+];
+const bundle = await h.exportBundle(filesystems);
+if (bundle.archives.length !== 1 || bundle.archives[0].id !== "rootfs") {
+	throw new Error("unexpected archives " + JSON.stringify(bundle.archives));
+}
+await h.importBundle({
+	manifest: bundle.manifest,
+	archives: [{id: "rootfs", source: "mnt", data: new ArrayBuffer(2)}],
+});
+const got = JSON.stringify(calls);
+const want = JSON.stringify([
+	["bundleManifest", filesystems],
+	["archive", "mnt"],
+	["importArchive", "mnt", [0, 0]],
+	["restoreBundleManifest", "wanix-migration-v1"],
+]);
+if (got !== want) {
+	throw new Error("calls = " + got + ", want " + want);
+}
+`
+	cmd := exec.Command("node", "--input-type=module", "-e", script)
+	cmd.Dir = ".."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node bundle harness smoke: %v\n%s", err, out)
 	}
 }
 
