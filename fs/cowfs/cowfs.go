@@ -42,7 +42,11 @@ import (
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
+	"tractor.dev/wanix/migration"
 )
+
+// FilesystemKind is the migration descriptor kind for copy-on-write filesystems.
+const FilesystemKind = "cowfs"
 
 // FS implements a copy-on-write filesystem that combines a read-only base
 // filesystem with a writable overlay filesystem. All modifications are made to the
@@ -72,6 +76,73 @@ type FS struct {
 	// whiteoutDir is the directory where whiteout files are stored.
 	// Automatically managed; do not modify directly.
 	whiteoutDir string
+}
+
+// New returns a copy-on-write filesystem using base as the read-only layer and
+// overlay as the writable layer.
+func New(base, overlay fs.FS) *FS {
+	return &FS{
+		Base:    base,
+		Overlay: overlay,
+	}
+}
+
+// Restore returns a copy-on-write filesystem and reloads persisted whiteout
+// state from overlay when whiteoutDir is not empty.
+func Restore(base, overlay fs.FS, whiteoutDir string) (*FS, error) {
+	if base == nil {
+		return nil, fmt.Errorf("cowfs restore base: %w", migration.ErrUnknownFilesystem)
+	}
+	if overlay == nil {
+		return nil, fmt.Errorf("cowfs restore overlay: %w", migration.ErrUnknownFilesystem)
+	}
+	fsys := New(base, overlay)
+	if whiteoutDir != "" {
+		if err := fsys.Whiteout(whiteoutDir); err != nil {
+			return nil, err
+		}
+	}
+	return fsys, nil
+}
+
+// RestoreDescriptor restores a copy-on-write filesystem from a migration
+// descriptor and filesystem lookup function.
+func RestoreDescriptor(desc migration.FilesystemDescriptor, lookup func(string) (fs.FS, error)) (*FS, error) {
+	if desc.Kind != FilesystemKind {
+		return nil, fmt.Errorf("cowfs restore descriptor kind %q: %w", desc.Kind, migration.ErrUnsupported)
+	}
+	if lookup == nil {
+		return nil, fmt.Errorf("cowfs restore descriptor lookup: %w", migration.ErrUnknownFilesystem)
+	}
+	base, err := lookup(desc.BaseFSID)
+	if err != nil {
+		return nil, fmt.Errorf("cowfs restore base %q: %w", desc.BaseFSID, err)
+	}
+	overlay, err := lookup(desc.OverlayFSID)
+	if err != nil {
+		return nil, fmt.Errorf("cowfs restore overlay %q: %w", desc.OverlayFSID, err)
+	}
+	return Restore(base, overlay, desc.WhiteoutDir)
+}
+
+// Descriptor returns a migration descriptor for this copy-on-write filesystem.
+func (u *FS) Descriptor(id, baseID, overlayID string) (migration.FilesystemDescriptor, error) {
+	if id == "" {
+		return migration.FilesystemDescriptor{}, fmt.Errorf("cowfs descriptor id: %w", migration.ErrUnknownFilesystem)
+	}
+	if baseID == "" {
+		return migration.FilesystemDescriptor{}, fmt.Errorf("cowfs descriptor base: %w", migration.ErrUnknownFilesystem)
+	}
+	if overlayID == "" {
+		return migration.FilesystemDescriptor{}, fmt.Errorf("cowfs descriptor overlay: %w", migration.ErrUnknownFilesystem)
+	}
+	return migration.FilesystemDescriptor{
+		ID:          id,
+		Kind:        FilesystemKind,
+		BaseFSID:    baseID,
+		OverlayFSID: overlayID,
+		WhiteoutDir: u.whiteoutDir,
+	}, nil
 }
 
 // Reset clears all rename and tombstone tracking in the filesystem.
@@ -161,9 +232,7 @@ func (u *FS) Whiteout(dir string) error {
 func (u *FS) tombstone(name string) error {
 	u.tombstones.Store(name, struct{}{})
 	if u.whiteoutDir != "" {
-		h := sha1.New()
-		h.Write([]byte(name))
-		filename := path.Join(u.whiteoutDir, "deletes", fmt.Sprintf("%x", h.Sum(nil)))
+		filename := whiteoutPath(u.whiteoutDir, "deletes", name)
 		if err := fs.WriteFile(u.Overlay, filename, []byte(name), 0o644); err != nil {
 			return err
 		}
@@ -174,15 +243,31 @@ func (u *FS) tombstone(name string) error {
 func (u *FS) rename(oldname, newname string) error {
 	u.renames.Store(oldname, newname)
 	if u.whiteoutDir != "" {
-		h := sha1.New()
-		h.Write([]byte(oldname))
-		filename := path.Join(u.whiteoutDir, "renames", fmt.Sprintf("%x", h.Sum(nil)))
+		filename := whiteoutPath(u.whiteoutDir, "renames", oldname)
 		content := []byte(fmt.Sprintf("%s %s", oldname, newname))
 		if err := fs.WriteFile(u.Overlay, filename, content, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func whiteoutPath(dir, kind, name string) string {
+	h := sha1.New()
+	h.Write([]byte(name))
+	return path.Join(dir, kind, fmt.Sprintf("%x", h.Sum(nil)))
+}
+
+func (u *FS) clearTombstone(name string) error {
+	u.tombstones.Delete(name)
+	if u.whiteoutDir == "" {
+		return nil
+	}
+	err := fs.Remove(u.Overlay, whiteoutPath(u.whiteoutDir, "deletes", name))
+	if err == nil || errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 // resolveTerminal follows rename chains to the terminal path without checking tombstones.
@@ -456,7 +541,9 @@ func (u *FS) Rename(oldname, newname string) error {
 	}
 
 	// Clear tombstone on the destination (file is now alive there)
-	u.tombstones.Delete(newname)
+	if err := u.clearTombstone(newname); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -691,7 +778,9 @@ func (u *FS) Symlink(oldname, newname string) error {
 	}
 
 	// 5. Clear tombstone after successful creation
-	u.tombstones.Delete(newpath)
+	if err := u.clearTombstone(newpath); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -770,7 +859,9 @@ func (u *FS) Mkdir(name string, perm os.FileMode) error {
 	}
 
 	// 6. Clear tombstone after successful creation
-	u.tombstones.Delete(path)
+	if err := u.clearTombstone(path); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -1017,7 +1108,10 @@ func (u *FS) OpenFile(name string, flag int, perm os.FileMode) (fs.File, error) 
 		}
 
 		// Clear tombstone after successful write/create
-		u.tombstones.Delete(path)
+		if err := u.clearTombstone(path); err != nil {
+			f.Close()
+			return nil, err
+		}
 
 		return f, nil
 	}
