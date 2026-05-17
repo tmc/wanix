@@ -67,6 +67,35 @@ func TestNamespace(t *testing.T) {
 	}
 }
 
+func TestBindRawPreservesAllocator(t *testing.T) {
+	ns := New(context.Background())
+	if err := ns.BindRaw(&memfs.Allocator{}, ".", "#ramfs", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(ns, "#ramfs", "one", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(ns, "#ramfs", "two", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(ns, "one/file.txt", []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(ns, "two/file.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("two/file.txt error = %v, want ErrNotExist", err)
+	}
+}
+
+func TestBindAllocatesDirectAllocator(t *testing.T) {
+	ns := New(context.Background())
+	if err := ns.Bind(&memfs.Allocator{}, ".", "mnt", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(ns, "mnt/file.txt", []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResolveFS(t *testing.T) {
 	ns := New(context.Background())
 

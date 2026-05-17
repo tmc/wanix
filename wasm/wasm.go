@@ -53,7 +53,7 @@ func main() {
 		{"#js", jsfs.NewFS(js.Global())},
 	}
 	for _, b := range sysbindings {
-		if err := root.NS().Bind(b.fsys, ".", b.dst); err != nil {
+		if err := root.NS().BindRaw(b.fsys, ".", b.dst); err != nil {
 			log.Fatal(err)
 		}
 	}

@@ -258,6 +258,16 @@ func (ns *NS) Unbind(src fs.FS, srcPath, dstPath string) error {
 // If specified, mode controls the order of the bindings.
 // Only the first mode is used. If not specified, ModeAfter is used.
 func (ns *NS) Bind(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
+	return ns.bind(src, srcPath, dstPath, true, mode...)
+}
+
+// BindRaw adds a file or directory to the namespace without invoking
+// BindAllocator on the resolved source filesystem.
+func (ns *NS) BindRaw(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
+	return ns.bind(src, srcPath, dstPath, false, mode...)
+}
+
+func (ns *NS) bind(src fs.FS, srcPath, dstPath string, allocate bool, mode ...BindMode) error {
 	if src == nil {
 		return &fs.PathError{Op: "bind", Path: srcPath, Err: fs.ErrInvalid}
 	}
@@ -278,7 +288,7 @@ func (ns *NS) Bind(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
 
 	// If the source filesystem implements BindAllocator,
 	// use it to allocate a new filesystem for the binding.
-	if allocator, ok := rfsys.(BindAllocator); ok {
+	if allocator, ok := rfsys.(BindAllocator); allocate && ok {
 		rfsys, err = allocator.BindAllocFS(srcPath)
 		if err != nil {
 			return err
