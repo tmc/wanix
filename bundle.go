@@ -12,7 +12,7 @@ import (
 	"tractor.dev/wanix/migration"
 )
 
-const BundleManifestVersion = "wanix-migration-v1"
+const BundleManifestVersion = migration.BundleManifestVersion
 
 // BundleManifestOptions configures task filesystem manifest export.
 type BundleManifestOptions struct {
@@ -40,6 +40,28 @@ type BundleRestore struct {
 	Filesystems map[string]fs.FS
 	Tasks       []*Task
 	VMs         []string
+}
+
+// BundleManifest returns a migration manifest for the task's task filesystem.
+func (r *Task) BundleManifest(opts BundleManifestOptions) (migration.BundleManifest, error) {
+	return r.fsys.BundleManifest(opts)
+}
+
+// ImportBundleManifest restores task manifests into the task's task filesystem.
+func (r *Task) ImportBundleManifest(ctx context.Context, manifest migration.BundleManifest, lookup vfs.FSIDLookup) ([]*Task, error) {
+	return r.fsys.ImportBundleManifest(ctx, manifest, r, lookup)
+}
+
+// RestoreBundleManifest restores a migration bundle manifest into the task's
+// task filesystem. The caller supplies filesystem lookup and optional VM
+// restoration because those resources are owned by the embedding runtime.
+func (r *Task) RestoreBundleManifest(ctx context.Context, manifest migration.BundleManifest, lookup vfs.FSIDLookup, opts BundleRestoreOptions) (*BundleRestore, error) {
+	return r.fsys.restoreBundle(ctx, manifest, r, lookup, opts)
+}
+
+// ValidateBundleRestore reports whether manifest can be restored by this package.
+func ValidateBundleRestore(manifest migration.BundleManifest) error {
+	return checkBundleRestoreUnsupported(manifest)
 }
 
 // BundleManifest returns a migration manifest for the task filesystem.
@@ -256,6 +278,9 @@ func checkBundleRestoreUnsupported(manifest migration.BundleManifest) error {
 }
 
 func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool) error {
+	if err := migration.ValidateBundleManifest(manifest); err != nil {
+		return err
+	}
 	if len(manifest.VMs) != 0 {
 		if !allowVMs {
 			return fmt.Errorf("restore bundle vms: %w", migration.ErrUnsupported)

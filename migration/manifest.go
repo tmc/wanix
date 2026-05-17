@@ -2,6 +2,7 @@ package migration
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"time"
 )
@@ -11,8 +12,11 @@ var (
 	ErrInFlight          = errors.New("migration in flight")
 	ErrUnknownComponent  = errors.New("migration unknown component")
 	ErrUnknownFilesystem = errors.New("migration unknown filesystem")
+	ErrInvalidManifest   = errors.New("migration invalid manifest")
 	ErrUnrestorableFD    = errors.New("migration unrestorable file descriptor")
 )
+
+const BundleManifestVersion = "wanix-migration-v1"
 
 type Phase string
 
@@ -86,6 +90,18 @@ type BundleManifest struct {
 	Tasks       []TaskManifest         `json:"tasks,omitempty"`
 	VMs         []VMManifest           `json:"vms,omitempty"`
 	Workers     []WorkerManifest       `json:"workers,omitempty"`
+}
+
+func ValidateBundleManifest(manifest BundleManifest) error {
+	if manifest.Version != BundleManifestVersion {
+		return fmt.Errorf("bundle manifest version %q: %w", manifest.Version, ErrInvalidManifest)
+	}
+	switch manifest.Mode {
+	case ModeMigrate, ModeFork:
+		return nil
+	default:
+		return fmt.Errorf("bundle manifest mode %q: %w", manifest.Mode, ErrInvalidManifest)
+	}
 }
 
 type TaskManifest struct {

@@ -15,6 +15,16 @@ import (
 	"tractor.dev/wanix/migration"
 )
 
+func testBundleManifest(manifest migration.BundleManifest) migration.BundleManifest {
+	if manifest.Version == "" {
+		manifest.Version = migration.BundleManifestVersion
+	}
+	if manifest.Mode == "" {
+		manifest.Mode = migration.ModeMigrate
+	}
+	return manifest
+}
+
 func TestTaskFSBundleManifestRoundTrip(t *testing.T) {
 	backing := memfs.New()
 	if err := fs.WriteFile(backing, "file.txt", []byte("abcdef"), 0o644); err != nil {
@@ -232,7 +242,7 @@ func TestRestoreBundleRestoresCowfsTaskAndFD(t *testing.T) {
 	}
 
 	manifest := migration.BundleManifest{
-		Version: "wanix-migration-v1",
+		Version: migration.BundleManifestVersion,
 		Mode:    migration.ModeMigrate,
 		Filesystems: []migration.FilesystemDescriptor{
 			cowDesc,
@@ -323,7 +333,7 @@ func TestRestoreBundleRestoresCowfsTaskAndFD(t *testing.T) {
 }
 
 func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
-	manifest := migration.BundleManifest{
+	manifest := testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{
 			ID:   "7",
 			Kind: "v86",
@@ -331,7 +341,7 @@ func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 				"alias": "guest",
 			},
 		}},
-	}
+	})
 	var restoredVMs []migration.VMManifest
 	restored, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
 		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
@@ -356,7 +366,7 @@ func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 }
 
 func TestRestoreBundleRollsBackVMsOnTaskFailure(t *testing.T) {
-	manifest := migration.BundleManifest{
+	manifest := testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{
 			ID:   "7",
 			Kind: "v86",
@@ -365,7 +375,7 @@ func TestRestoreBundleRollsBackVMsOnTaskFailure(t *testing.T) {
 			ID:   "1",
 			Kind: "missing",
 		}},
-	}
+	})
 	var rolledBack []string
 	_, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
 		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
@@ -388,7 +398,7 @@ func TestTaskFSImportBundleManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskfs := NewTaskFS()
-	tasks, err := taskfs.ImportBundleManifest(context.Background(), migration.BundleManifest{
+	tasks, err := taskfs.ImportBundleManifest(context.Background(), testBundleManifest(migration.BundleManifest{
 		Tasks: []migration.TaskManifest{{
 			ID:   "2",
 			Kind: "auto",
@@ -404,7 +414,7 @@ func TestTaskFSImportBundleManifest(t *testing.T) {
 				}},
 			},
 		}},
-	}, nil, func(id string) (fs.FS, error) {
+	}), nil, func(id string) (fs.FS, error) {
 		if id == "rootfs" {
 			return backing, nil
 		}
@@ -431,7 +441,7 @@ func TestTaskFSImportBundleManifestRollsBackOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskfs := NewTaskFS()
-	manifest := migration.BundleManifest{
+	manifest := testBundleManifest(migration.BundleManifest{
 		Tasks: []migration.TaskManifest{
 			{
 				ID:    "1",
@@ -471,7 +481,7 @@ func TestTaskFSImportBundleManifestRollsBackOnFailure(t *testing.T) {
 				}},
 			},
 		},
-	}
+	})
 	_, err := taskfs.ImportBundleManifest(context.Background(), manifest, nil, func(id string) (fs.FS, error) {
 		if id == "rootfs" {
 			return backing, nil
@@ -498,12 +508,12 @@ func TestTaskFSImportBundleManifestRollsBackOnFailure(t *testing.T) {
 
 func TestRestoreBundleRollsBackExistingTaskFSOnFailure(t *testing.T) {
 	taskfs := NewTaskFS()
-	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Tasks: []migration.TaskManifest{
 			{ID: "1", Kind: "auto", Alias: "shell"},
 			{ID: "2", Kind: "missing"},
 		},
-	}, BundleRestoreOptions{TaskFS: taskfs})
+	}), BundleRestoreOptions{TaskFS: taskfs})
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("RestoreBundle error = %v, want ErrNotExist", err)
 	}
@@ -523,16 +533,16 @@ func TestRestoreBundleRollsBackExistingTaskFSOnFailure(t *testing.T) {
 }
 
 func TestRestoreBundleFailsClosedForUnsupportedResources(t *testing.T) {
-	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{ID: "vm1", Kind: "v86"}},
-	}, BundleRestoreOptions{})
+	}), BundleRestoreOptions{})
 	if !errors.Is(err, migration.ErrUnsupported) {
 		t.Fatalf("RestoreBundle VM error = %v, want ErrUnsupported", err)
 	}
 
-	_, err = RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err = RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{ID: "1", Kind: "v86", StatePath: "vm.state"}},
-	}, BundleRestoreOptions{
+	}), BundleRestoreOptions{
 		RestoreVM: func(context.Context, migration.VMManifest) (string, func(), error) {
 			t.Fatal("RestoreVM called for unsupported VM state")
 			return "", nil, nil
@@ -542,16 +552,35 @@ func TestRestoreBundleFailsClosedForUnsupportedResources(t *testing.T) {
 		t.Fatalf("RestoreBundle VM state error = %v, want ErrUnsupported", err)
 	}
 
-	_, err = RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err = RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Workers: []migration.WorkerManifest{{ID: "worker1", Kind: "browser"}},
-	}, BundleRestoreOptions{})
+	}), BundleRestoreOptions{})
 	if !errors.Is(err, migration.ErrUnsupported) {
 		t.Fatalf("RestoreBundle worker error = %v, want ErrUnsupported", err)
 	}
 }
 
-func TestRestoreBundleChecksUnsupportedBeforeFilesystems(t *testing.T) {
+func TestRestoreBundleRejectsInvalidManifestHeader(t *testing.T) {
 	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+		Version: "wanix-migration-v0",
+		Mode:    migration.ModeMigrate,
+	}, BundleRestoreOptions{})
+	if !errors.Is(err, migration.ErrInvalidManifest) {
+		t.Fatalf("RestoreBundle invalid version error = %v, want ErrInvalidManifest", err)
+	}
+
+	taskfs := NewTaskFS()
+	_, err = taskfs.ImportBundleManifest(context.Background(), migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.Mode("copy"),
+	}, nil, nil)
+	if !errors.Is(err, migration.ErrInvalidManifest) {
+		t.Fatalf("ImportBundleManifest invalid mode error = %v, want ErrInvalidManifest", err)
+	}
+}
+
+func TestRestoreBundleChecksUnsupportedBeforeFilesystems(t *testing.T) {
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{{
 			ID:          "cow1",
 			Kind:        cowfs.FilesystemKind,
@@ -559,7 +588,7 @@ func TestRestoreBundleChecksUnsupportedBeforeFilesystems(t *testing.T) {
 			OverlayFSID: "missing-overlay",
 		}},
 		VMs: []migration.VMManifest{{ID: "vm1", Kind: "v86"}},
-	}, BundleRestoreOptions{})
+	}), BundleRestoreOptions{})
 	if !errors.Is(err, migration.ErrUnsupported) {
 		t.Fatalf("RestoreBundle error = %v, want ErrUnsupported", err)
 	}
@@ -568,13 +597,13 @@ func TestRestoreBundleChecksUnsupportedBeforeFilesystems(t *testing.T) {
 func TestTaskFSImportBundleManifestChecksUnsupportedBeforeFilesystems(t *testing.T) {
 	taskfs := NewTaskFS()
 	called := false
-	_, err := taskfs.ImportBundleManifest(context.Background(), migration.BundleManifest{
+	_, err := taskfs.ImportBundleManifest(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{{
 			ID:   "rootfs",
 			Kind: "memfs",
 		}},
 		Workers: []migration.WorkerManifest{{ID: "worker1", Kind: "browser"}},
-	}, nil, func(id string) (fs.FS, error) {
+	}), nil, func(id string) (fs.FS, error) {
 		called = true
 		return memfs.New(), nil
 	})
@@ -587,47 +616,47 @@ func TestTaskFSImportBundleManifestChecksUnsupportedBeforeFilesystems(t *testing
 }
 
 func TestRestoreBundleRejectsMissingFilesystems(t *testing.T) {
-	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{{ID: "rootfs", Kind: "memfs"}},
-	}, BundleRestoreOptions{})
+	}), BundleRestoreOptions{})
 	if !errors.Is(err, migration.ErrUnsupported) {
 		t.Fatalf("RestoreBundle missing fs error = %v, want ErrUnsupported", err)
 	}
 
-	_, err = RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err = RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{{
 			ID:          "cow1",
 			Kind:        cowfs.FilesystemKind,
 			BaseFSID:    "base1",
 			OverlayFSID: "missing",
 		}},
-	}, BundleRestoreOptions{Filesystems: map[string]fs.FS{"base1": memfs.New()}})
+	}), BundleRestoreOptions{Filesystems: map[string]fs.FS{"base1": memfs.New()}})
 	if !errors.Is(err, migration.ErrUnknownFilesystem) {
 		t.Fatalf("RestoreBundle missing cowfs layer error = %v, want ErrUnknownFilesystem", err)
 	}
 }
 
 func TestRestoreBundleRestoresCowfsFromDescriptor(t *testing.T) {
-	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{{
 			ID:          "cow1",
 			Kind:        cowfs.FilesystemKind,
 			BaseFSID:    "missing-base",
 			OverlayFSID: "missing-overlay",
 		}},
-	}, BundleRestoreOptions{Filesystems: map[string]fs.FS{"cow1": memfs.New()}})
+	}), BundleRestoreOptions{Filesystems: map[string]fs.FS{"cow1": memfs.New()}})
 	if !errors.Is(err, migration.ErrUnknownFilesystem) {
 		t.Fatalf("RestoreBundle external cowfs error = %v, want ErrUnknownFilesystem", err)
 	}
 }
 
 func TestRestoreBundleRejectsDuplicateFilesystemIDs(t *testing.T) {
-	_, err := RestoreBundle(context.Background(), migration.BundleManifest{
+	_, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
 		Filesystems: []migration.FilesystemDescriptor{
 			{ID: "rootfs", Kind: "memfs"},
 			{ID: "rootfs", Kind: "memfs"},
 		},
-	}, BundleRestoreOptions{})
+	}), BundleRestoreOptions{})
 	if !errors.Is(err, fs.ErrExist) {
 		t.Fatalf("RestoreBundle duplicate fs error = %v, want ErrExist", err)
 	}
