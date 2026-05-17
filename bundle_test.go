@@ -206,8 +206,8 @@ func TestTaskFSBundleManifestFailsClosed(t *testing.T) {
 	}
 	SetWorker(task, nil)
 	Export(task, memfs.New())
-	if _, err := taskfs.BundleManifest(opts); !errors.Is(err, migration.ErrUnsupported) {
-		t.Fatalf("BundleManifest export error = %v, want ErrUnsupported", err)
+	if _, err := taskfs.BundleManifest(opts); !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("BundleManifest export error = %v, want ErrUnknownFilesystem", err)
 	}
 	if _, err := taskfs.BundleManifest(BundleManifestOptions{}); !errors.Is(err, migration.ErrUnknownFilesystem) {
 		t.Fatalf("BundleManifest nil resolver error = %v, want ErrUnknownFilesystem", err)
@@ -234,6 +234,58 @@ func TestTaskFSBundleManifestExportsRestartableRunningTask(t *testing.T) {
 	}
 	if len(manifest.Tasks) != 1 || manifest.Tasks[0].State != migration.TaskStateRunning {
 		t.Fatalf("manifest tasks = %#v, want one running task", manifest.Tasks)
+	}
+}
+
+func TestRestoreBundleRestoresTaskExport(t *testing.T) {
+	rootfs := memfs.New()
+	exportfs := memfs.New()
+	if err := fs.WriteFile(exportfs, "export.txt", []byte("exported"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
+		Filesystems: []migration.FilesystemDescriptor{
+			{ID: "rootfs", Kind: "memfs"},
+			{ID: "exportfs", Kind: "memfs"},
+		},
+		Tasks: []migration.TaskManifest{{
+			ID:         "1",
+			Kind:       "auto",
+			ExportFSID: "exportfs",
+			Namespace: migration.NamespaceManifest{
+				TaskID: "1",
+				Binds: []migration.BindManifest{{
+					DstPath: ".",
+					SrcFSID: "rootfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+					Root:    true,
+				}},
+			},
+		}},
+	}), BundleRestoreOptions{
+		Filesystems: map[string]fs.FS{
+			"rootfs":   rootfs,
+			"exportfs": exportfs,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored.Tasks) != 1 {
+		t.Fatalf("got %d restored tasks, want 1", len(restored.Tasks))
+	}
+	fsys, err := restored.Tasks[0].Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := fs.ReadFile(fsys, "export.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "exported" {
+		t.Fatalf("restored export = %q, want exported", data)
 	}
 }
 

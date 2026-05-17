@@ -29,12 +29,13 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 			WhiteoutDir: ".wh",
 		}},
 		Tasks: []TaskManifest{{
-			ID:      "1",
-			Kind:    "gojs",
-			State:   TaskStateExited,
-			Alias:   "shell",
-			Command: "rc",
-			Exit:    "0",
+			ID:         "1",
+			Kind:       "gojs",
+			State:      TaskStateExited,
+			Alias:      "shell",
+			Command:    "rc",
+			Exit:       "0",
+			ExportFSID: "exportfs",
 			FDs: []FDManifest{{
 				FD:         3,
 				Kind:       "file",
@@ -86,6 +87,9 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 	}
 	if got := out.Tasks[0].State; got != TaskStateExited {
 		t.Fatalf("task state = %q, want exited", got)
+	}
+	if got := out.Tasks[0].ExportFSID; got != "exportfs" {
+		t.Fatalf("task export fs id = %q, want exportfs", got)
 	}
 	if got := out.Filesystems[0].OverlayFSID; got != "overlayfs" {
 		t.Fatalf("filesystem overlay id = %q, want overlayfs", got)

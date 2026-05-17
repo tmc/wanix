@@ -285,6 +285,11 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	if err := source.NS().Bind(backing, ".", "tmp", vfs.ModeReplace); err != nil {
 		t.Fatal(err)
 	}
+	export := memfs.New()
+	if err := fs.WriteFile(export, "export.txt", []byte("exported"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	Export(source, export)
 	file, err := fs.OpenFile(source.NS(), "tmp/data.txt", os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -303,6 +308,9 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 		if candidate == backing {
 			return "rootfs", nil
 		}
+		if candidate == export {
+			return "exportfs", nil
+		}
 		return "", migration.ErrUnknownFilesystem
 	})
 	if err != nil {
@@ -320,11 +328,17 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	if len(manifest.FDs) != 1 || manifest.FDs[0].FD != fd || manifest.FDs[0].Offset != 3 {
 		t.Fatalf("manifest fds = %#v, want fd %d offset 3", manifest.FDs, fd)
 	}
+	if manifest.ExportFSID != "exportfs" {
+		t.Fatalf("manifest export fs id = %q, want exportfs", manifest.ExportFSID)
+	}
 
 	targetTasks := NewTaskFS()
 	restored, err := targetTasks.ImportManifest(context.Background(), manifest, nil, func(id string) (fs.FS, error) {
 		if id == "rootfs" {
 			return backing, nil
+		}
+		if id == "exportfs" {
+			return export, nil
 		}
 		return nil, migration.ErrUnknownFilesystem
 	})
@@ -368,6 +382,17 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	}
 	if string(aliasData) != restored.ID()+"\n" {
 		t.Fatalf("alias id data = %q, want %q", aliasData, restored.ID()+"\n")
+	}
+	restoredExport, err := restored.Export()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exportData, err := fs.ReadFile(restoredExport, "export.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exportData) != "exported" {
+		t.Fatalf("restored export data = %q, want exported", exportData)
 	}
 	nextTask, err := targetTasks.Alloc("auto", nil)
 	if err != nil {

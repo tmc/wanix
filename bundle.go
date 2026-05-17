@@ -69,7 +69,7 @@ func ValidateBundleRestore(manifest migration.BundleManifest) error {
 // The caller supplies the filesystem descriptors and resolver because only the
 // embedding runtime knows how a filesystem should be serialized or reconnected.
 // Live worker handles are accepted only for restartable task drivers. Task
-// exports are rejected until that resource layer has migration descriptors.
+// exports must resolve to one of the caller-supplied filesystem descriptors.
 func (d *TaskFS) BundleManifest(opts BundleManifestOptions) (migration.BundleManifest, error) {
 	if opts.Resolve == nil {
 		return migration.BundleManifest{}, fmt.Errorf("export bundle filesystem resolver: %w", migration.ErrUnknownFilesystem)
@@ -142,9 +142,6 @@ func (r *Task) checkBundleExportable() error {
 		if _, ok := r.driver.(TaskRestorer); !ok {
 			return fmt.Errorf("export task %s worker: %w", r.ID(), migration.ErrUnsupported)
 		}
-	}
-	if r.export != nil {
-		return fmt.Errorf("export task %s filesystem export: %w", r.ID(), migration.ErrUnsupported)
 	}
 	return nil
 }

@@ -286,17 +286,18 @@ func validateWorkers(workers []WorkerManifest) error {
 }
 
 type TaskManifest struct {
-	ID        string            `json:"id"`
-	Kind      string            `json:"kind,omitempty"`
-	State     TaskState         `json:"state,omitempty"`
-	Alias     string            `json:"alias,omitempty"`
-	Command   string            `json:"command,omitempty"`
-	Exit      string            `json:"exit,omitempty"`
-	Directory string            `json:"directory,omitempty"`
-	Env       []string          `json:"env,omitempty"`
-	FDs       []FDManifest      `json:"fds,omitempty"`
-	Namespace NamespaceManifest `json:"namespace,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	ID         string            `json:"id"`
+	Kind       string            `json:"kind,omitempty"`
+	State      TaskState         `json:"state,omitempty"`
+	Alias      string            `json:"alias,omitempty"`
+	Command    string            `json:"command,omitempty"`
+	Exit       string            `json:"exit,omitempty"`
+	Directory  string            `json:"directory,omitempty"`
+	Env        []string          `json:"env,omitempty"`
+	ExportFSID string            `json:"export_fs_id,omitempty"`
+	FDs        []FDManifest      `json:"fds,omitempty"`
+	Namespace  NamespaceManifest `json:"namespace,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 type TaskState string

@@ -452,6 +452,7 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 	r.mu.Lock()
 	id := r.ID()
 	state := taskStateLocked(r)
+	export := r.export
 	manifest := migration.TaskManifest{
 		ID:        id,
 		Kind:      r.kind,
@@ -471,6 +472,16 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 		errs = append(errs, err)
 	}
 	manifest.Namespace = namespace
+	if export != nil {
+		id, err := resolve(export)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resolve export filesystem for task %s: %w", manifest.ID, err))
+		} else if id == "" {
+			errs = append(errs, fmt.Errorf("resolve export filesystem for task %s: %w", manifest.ID, migration.ErrUnknownFilesystem))
+		} else {
+			manifest.ExportFSID = id
+		}
+	}
 	fds, err := r.FDManifests()
 	if err != nil {
 		errs = append(errs, err)
@@ -824,6 +835,16 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 		return nil, err
 	}
 	task.ns = namespace
+	if manifest.ExportFSID != "" {
+		export, err := lookup(manifest.ExportFSID)
+		if err != nil {
+			return nil, fmt.Errorf("import task %s export filesystem %s: %w", manifest.ID, manifest.ExportFSID, err)
+		}
+		if export == nil {
+			return nil, fmt.Errorf("import task %s export filesystem %s: %w", manifest.ID, manifest.ExportFSID, migration.ErrUnknownFilesystem)
+		}
+		task.export = export
+	}
 	if err := task.importFDManifests(manifest.FDs); err != nil {
 		return nil, err
 	}
@@ -896,12 +917,23 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	oldFDs := task.fds
 	oldFDIdx := task.fdIdx
 	oldWorker := task.worker
+	oldExport := task.export
 	task.mu.Unlock()
 
 	taskCtx := context.WithValue(ctx, TaskContextKey, task)
 	namespace, err := vfs.ImportManifest(taskCtx, manifest.Namespace, lookup)
 	if err != nil {
 		return taskRestore{}, err
+	}
+	var export fs.FS
+	if manifest.ExportFSID != "" {
+		export, err = lookup(manifest.ExportFSID)
+		if err != nil {
+			return taskRestore{}, fmt.Errorf("restore task %s export filesystem %s: %w", manifest.ID, manifest.ExportFSID, err)
+		}
+		if export == nil {
+			return taskRestore{}, fmt.Errorf("restore task %s export filesystem %s: %w", manifest.ID, manifest.ExportFSID, migration.ErrUnknownFilesystem)
+		}
 	}
 	tmp := &Task{
 		ns:    namespace,
@@ -914,7 +946,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	newFDs := tmp.fds
 	newFDIdx := tmp.fdIdx
 
-	apply := func(driver TaskDriver, alias, kind, cmd, exit string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int, worker any) {
+	apply := func(driver TaskDriver, alias, kind, cmd, exit string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int, worker any, export fs.FS) {
 		task.mu.Lock()
 		task.driver = driver
 		task.alias = alias
@@ -927,6 +959,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 		task.fds = fds
 		task.fdIdx = fdIdx
 		task.worker = worker
+		task.export = export
 		task.mu.Unlock()
 	}
 	setAlias := func(old, new string) {
@@ -942,13 +975,13 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 		d.mu.Unlock()
 	}
 
-	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Exit, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx, nil)
+	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Exit, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx, nil, export)
 	setAlias(oldAlias, manifest.Alias)
 
 	restore := taskRestore{
 		rollback: func() {
 			closeOpenFiles(newFDs)
-			apply(oldDriver, oldAlias, oldKind, oldCmd, oldExit, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx, oldWorker)
+			apply(oldDriver, oldAlias, oldKind, oldCmd, oldExit, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx, oldWorker, oldExport)
 			setAlias(manifest.Alias, oldAlias)
 		},
 		commit: func() {
