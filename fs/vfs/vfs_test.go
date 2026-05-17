@@ -416,6 +416,243 @@ func TestExportManifestUnknownFilesystem(t *testing.T) {
 	}
 }
 
+func TestImportManifestRebuildsBindingOrder(t *testing.T) {
+	a := newNamespaceImportFS("a")
+	b := newNamespaceImportFS("b")
+	c := newNamespaceImportFS("c")
+	filesystems := map[string]fs.FS{
+		"a": a,
+		"b": b,
+		"c": c,
+	}
+
+	ns := New(context.Background())
+	if err := ns.Bind(a, ".", "mnt", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(b, ".", "mnt", ModeAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(c, ".", "mnt", ModeBefore); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ns.ExportManifest("task1", namespaceImportResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shuffled := manifest
+	shuffled.Binds = []migration.BindManifest{
+		manifest.Binds[2],
+		manifest.Binds[0],
+		manifest.Binds[1],
+	}
+
+	imported, err := ImportManifest(context.Background(), shuffled, namespaceImportLookup(filesystems))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := fs.ReadFile(imported, "mnt/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "b" {
+		t.Fatalf("imported mnt/file.txt = %q, want first after bind b", got)
+	}
+	roundTrip, err := imported.ExportManifest("task1", namespaceImportResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip, manifest) {
+		t.Fatalf("round trip manifest = %#v, want %#v", roundTrip, manifest)
+	}
+}
+
+func TestImportManifestPreservesMultiDestinationIndexes(t *testing.T) {
+	filesystems := map[string]fs.FS{
+		"root": newNamespaceImportFS("root"),
+		"task": newNamespaceImportFS("task"),
+		"a":    newNamespaceImportFS("a"),
+		"b":    newNamespaceImportFS("b"),
+		"c":    newNamespaceImportFS("c"),
+	}
+	manifest := migration.NamespaceManifest{
+		TaskID: "task1",
+		Binds: []migration.BindManifest{
+			{DstPath: "mnt", SrcFSID: "c", SrcPath: ".", Mode: "before", Index: 2},
+			{DstPath: ".", SrcFSID: "root", SrcPath: ".", Mode: "replace", Index: 0, Root: true},
+			{DstPath: "mnt", SrcFSID: "b", SrcPath: ".", Mode: "after", Index: 0},
+			{DstPath: "#task", SrcFSID: "task", SrcPath: ".", Mode: "replace", Index: 0, System: true},
+			{DstPath: "mnt", SrcFSID: "a", SrcPath: ".", Mode: "replace", Index: 1},
+		},
+	}
+	imported, err := ImportManifest(context.Background(), manifest, namespaceImportLookup(filesystems))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := fs.ReadFile(imported, "mnt/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "b" {
+		t.Fatalf("imported mnt/file.txt = %q, want first indexed bind b", got)
+	}
+	roundTrip, err := imported.ExportManifest("task1", namespaceImportResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := migration.NamespaceManifest{
+		TaskID: "task1",
+		Binds: []migration.BindManifest{
+			{DstPath: "#task", SrcFSID: "task", SrcPath: ".", Mode: "replace", Index: 0, System: true},
+			{DstPath: ".", SrcFSID: "root", SrcPath: ".", Mode: "replace", Index: 0, Root: true},
+			{DstPath: "mnt", SrcFSID: "b", SrcPath: ".", Mode: "after", Index: 0},
+			{DstPath: "mnt", SrcFSID: "a", SrcPath: ".", Mode: "replace", Index: 1},
+			{DstPath: "mnt", SrcFSID: "c", SrcPath: ".", Mode: "before", Index: 2},
+		},
+	}
+	if !reflect.DeepEqual(roundTrip, want) {
+		t.Fatalf("round trip manifest = %#v, want %#v", roundTrip, want)
+	}
+}
+
+func TestImportManifestRootAndSystemBinds(t *testing.T) {
+	root := newNamespaceImportFS("root")
+	task := newNamespaceImportFS("task")
+	filesystems := map[string]fs.FS{
+		"root": root,
+		"task": task,
+	}
+
+	manifest := migration.NamespaceManifest{
+		TaskID: "task1",
+		Binds: []migration.BindManifest{
+			{DstPath: ".", SrcFSID: "root", SrcPath: ".", Mode: "replace", Index: 0, Root: true},
+			{DstPath: "#task", SrcFSID: "task", SrcPath: ".", Mode: "replace", Index: 0, System: true},
+		},
+	}
+	imported, err := ImportManifest(context.Background(), manifest, namespaceImportLookup(filesystems))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := imported.ExportManifest("task1", namespaceImportResolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]migration.BindManifest{}
+	for _, bind := range roundTrip.Binds {
+		seen[bind.DstPath] = bind
+	}
+	if !seen["."].Root || seen["."].System {
+		t.Fatalf("root bind shape = %#v", seen["."])
+	}
+	if !seen["#task"].System || seen["#task"].Root {
+		t.Fatalf("system bind shape = %#v", seen["#task"])
+	}
+}
+
+func TestImportManifestRejectsInvalidInput(t *testing.T) {
+	known := newNamespaceImportFS("known")
+	validBind := migration.BindManifest{
+		DstPath: ".",
+		SrcFSID: "known",
+		SrcPath: ".",
+		Mode:    "replace",
+		Index:   0,
+	}
+	tests := []struct {
+		name string
+		bind migration.BindManifest
+		err  error
+	}{
+		{
+			name: "unknown filesystem",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "missing", SrcPath: ".", Mode: "replace", Index: 0},
+			err:  migration.ErrUnknownFilesystem,
+		},
+		{
+			name: "bad mode",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "known", SrcPath: ".", Mode: "sideways", Index: 0},
+			err:  fs.ErrInvalid,
+		},
+		{
+			name: "empty mode",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "known", SrcPath: ".", Mode: "", Index: 0},
+			err:  fs.ErrInvalid,
+		},
+		{
+			name: "bad destination",
+			bind: migration.BindManifest{DstPath: "../escape", SrcFSID: "known", SrcPath: ".", Mode: "replace", Index: 0},
+			err:  fs.ErrNotExist,
+		},
+		{
+			name: "bad source path",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "known", SrcPath: "../escape", Mode: "replace", Index: 0},
+			err:  fs.ErrNotExist,
+		},
+		{
+			name: "empty filesystem id",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "", SrcPath: ".", Mode: "replace", Index: 0},
+			err:  migration.ErrUnknownFilesystem,
+		},
+		{
+			name: "missing source path",
+			bind: migration.BindManifest{DstPath: ".", SrcFSID: "known", SrcPath: "missing", Mode: "replace", Index: 0},
+			err:  fs.ErrNotExist,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{tt.bind}}, namespaceImportLookup(map[string]fs.FS{"known": known}))
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("ImportManifest error = %v, want %v", err, tt.err)
+			}
+		})
+	}
+
+	_, err := ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{
+		validBind,
+		{DstPath: ".", SrcFSID: "known", SrcPath: ".", Mode: "after", Index: 2},
+	}}, namespaceImportLookup(map[string]fs.FS{"known": known}))
+	if err == nil || !strings.Contains(err.Error(), "non-contiguous index") {
+		t.Fatalf("ImportManifest non-contiguous error = %v", err)
+	}
+
+	_, err = ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{
+		validBind,
+		{DstPath: ".", SrcFSID: "known", SrcPath: ".", Mode: "after", Index: 0},
+	}}, namespaceImportLookup(map[string]fs.FS{"known": known}))
+	if err == nil || !strings.Contains(err.Error(), "duplicate index") {
+		t.Fatalf("ImportManifest duplicate index error = %v", err)
+	}
+
+	_, err = ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{
+		{DstPath: ".", SrcFSID: "known", SrcPath: ".", Mode: "replace", Index: -1},
+	}}, namespaceImportLookup(map[string]fs.FS{"known": known}))
+	if err == nil || !strings.Contains(err.Error(), "negative index") {
+		t.Fatalf("ImportManifest negative index error = %v", err)
+	}
+
+	lookupErr := errors.New("lookup failed")
+	_, err = ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{validBind}}, func(string) (fs.FS, error) {
+		return nil, lookupErr
+	})
+	if !errors.Is(err, lookupErr) {
+		t.Fatalf("ImportManifest lookup error = %v, want %v", err, lookupErr)
+	}
+
+	_, err = ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{validBind}}, func(string) (fs.FS, error) {
+		return nil, nil
+	})
+	if !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("ImportManifest nil filesystem error = %v, want ErrUnknownFilesystem", err)
+	}
+
+	_, err = ImportManifest(context.Background(), migration.NamespaceManifest{Binds: []migration.BindManifest{validBind}}, nil)
+	if !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("ImportManifest nil lookup error = %v, want ErrUnknownFilesystem", err)
+	}
+}
+
 func TestSynthesizedDirectories(t *testing.T) {
 	// Create test filesystem
 	testFS := fstest.MapFS{
@@ -524,6 +761,42 @@ func TestSynthesizedDirectories(t *testing.T) {
 				t.Errorf("ReadDir(%q) got entry name %q, want %q", dir, entry.Name(), expectedName)
 			}
 		})
+	}
+}
+
+type namespaceImportFS struct {
+	id    string
+	files fskit.MapFS
+}
+
+func newNamespaceImportFS(id string) *namespaceImportFS {
+	return &namespaceImportFS{
+		id: id,
+		files: fskit.MapFS{
+			"file.txt": fskit.RawNode([]byte(id)),
+		},
+	}
+}
+
+func (f *namespaceImportFS) Open(name string) (fs.File, error) {
+	return f.files.Open(name)
+}
+
+func namespaceImportResolver(fsys fs.FS) (string, error) {
+	f, ok := fsys.(*namespaceImportFS)
+	if !ok {
+		return "", migration.ErrUnknownFilesystem
+	}
+	return f.id, nil
+}
+
+func namespaceImportLookup(filesystems map[string]fs.FS) FSIDLookup {
+	return func(id string) (fs.FS, error) {
+		fsys, ok := filesystems[id]
+		if !ok {
+			return nil, migration.ErrUnknownFilesystem
+		}
+		return fsys, nil
 	}
 }
 
