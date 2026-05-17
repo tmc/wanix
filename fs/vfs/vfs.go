@@ -8,12 +8,14 @@ import (
 	"path"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
+	"tractor.dev/wanix/migration"
 )
 
 type BindMode int
@@ -23,6 +25,21 @@ const (
 	ModeReplace BindMode = 0
 	ModeBefore  BindMode = -1
 )
+
+func (m BindMode) String() string {
+	switch m {
+	case ModeAfter:
+		return "after"
+	case ModeBefore:
+		return "before"
+	case ModeReplace:
+		return "replace"
+	default:
+		return "unknown"
+	}
+}
+
+type FSIDResolver func(fs.FS) (string, error)
 
 // BindAllocator is an interface that can be implemented by a filesystem
 // to allocate a new filesystem for a binding.
@@ -53,6 +70,7 @@ type bindTarget struct {
 	fs   fs.FS
 	path string
 	fi   fs.FileInfo
+	mode BindMode
 }
 
 // fileInfo returns the latest file info for the binding with the given name
@@ -274,8 +292,6 @@ func (ns *NS) Bind(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
 	}
 	file.Close()
 
-	ref := bindTarget{fs: rfsys, path: rname, fi: fi}
-
 	var m BindMode
 	if len(mode) == 0 {
 		m = ModeAfter
@@ -285,6 +301,8 @@ func (ns *NS) Bind(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
 	if m != ModeAfter && m != ModeBefore && m != ModeReplace {
 		return &fs.PathError{Op: "bind", Path: dstPath, Err: fs.ErrInvalid}
 	}
+
+	ref := bindTarget{fs: rfsys, path: rname, fi: fi, mode: m}
 
 	ns.mutate(func(b map[string][]bindTarget) {
 		switch m {
@@ -297,6 +315,42 @@ func (ns *NS) Bind(src fs.FS, srcPath, dstPath string, mode ...BindMode) error {
 		}
 	})
 	return nil
+}
+
+func (ns *NS) ExportManifest(taskID string, resolve FSIDResolver) (migration.NamespaceManifest, error) {
+	if resolve == nil {
+		return migration.NamespaceManifest{}, fmt.Errorf("%w: nil resolver", migration.ErrUnknownFilesystem)
+	}
+
+	b := ns.snapshot()
+	paths := make([]string, 0, len(b))
+	for p := range b {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	out := migration.NamespaceManifest{TaskID: taskID}
+	for _, dstPath := range paths {
+		for i, ref := range b[dstPath] {
+			id, err := resolve(ref.fs)
+			if err != nil {
+				return out, fmt.Errorf("resolve filesystem for bind %s[%d]: %w", dstPath, i, err)
+			}
+			if id == "" {
+				return out, fmt.Errorf("resolve filesystem for bind %s[%d]: %w", dstPath, i, migration.ErrUnknownFilesystem)
+			}
+			out.Binds = append(out.Binds, migration.BindManifest{
+				DstPath: dstPath,
+				SrcFSID: id,
+				SrcPath: ref.path,
+				Mode:    ref.mode.String(),
+				Index:   i,
+				Root:    dstPath == ".",
+				System:  strings.HasPrefix(dstPath, "#"),
+			})
+		}
+	}
+	return out, nil
 }
 
 // Binds returns all fileinfo for bindings in a directory
