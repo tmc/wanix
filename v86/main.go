@@ -22,12 +22,197 @@ import (
 //go:embed lib.js
 var assets embed.FS
 
+var v86StatePatchFuncs []js.Func
+
+type vmControl struct {
+	id    string
+	op    string
+	state js.Value
+	preVM bool
+}
+
+func parseControlMessage(msg js.Value) (vmControl, bool) {
+	if !stateProvided(msg) {
+		return vmControl{}, false
+	}
+	op, ok := normalizeControlType(jsStringField(msg, "type"))
+	if !ok {
+		op, ok = normalizeControlType(jsStringField(msg, "op"))
+	}
+	if !ok {
+		return vmControl{}, false
+	}
+	state := msg.Get("state")
+	if !stateProvided(state) {
+		state = msg.Get("initial_state")
+	}
+	return vmControl{
+		id:    jsStringField(msg, "id"),
+		op:    op,
+		state: state,
+	}, true
+}
+
+func jsStringField(v js.Value, name string) string {
+	if !stateProvided(v) {
+		return ""
+	}
+	field := v.Get(name)
+	if field.Type() != js.TypeString {
+		return ""
+	}
+	return field.String()
+}
+
+func stateProvided(v js.Value) bool {
+	t := v.Type()
+	return t != js.TypeUndefined && t != js.TypeNull
+}
+
+func stateBuffer(v js.Value) (js.Value, error) {
+	if !stateProvided(v) {
+		return js.Undefined(), fmt.Errorf("missing state")
+	}
+	if buffer := v.Get("buffer"); stateProvided(buffer) {
+		return buffer, nil
+	}
+	if stateProvided(v.Get("byteLength")) {
+		return v, nil
+	}
+	return js.Undefined(), fmt.Errorf("state must be ArrayBuffer or typed array")
+}
+
+func stateLoadable(v js.Value) (map[string]any, error) {
+	buffer, err := stateBuffer(v)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"buffer": buffer}, nil
+}
+
+func keepJSFunc(fn js.Func) js.Func {
+	v86StatePatchFuncs = append(v86StatePatchFuncs, fn)
+	return fn
+}
+
+func virtio9PDevice(vm js.Value) js.Value {
+	v86 := vm.Get("v86")
+	if !stateProvided(v86) {
+		return js.Undefined()
+	}
+	cpu := v86.Get("cpu")
+	if !stateProvided(cpu) {
+		return js.Undefined()
+	}
+	devices := cpu.Get("devices")
+	if !stateProvided(devices) {
+		return js.Undefined()
+	}
+	return devices.Get("virtio_9p")
+}
+
+func patchHandle9PState(vm js.Value) {
+	dev := virtio9PDevice(vm)
+	if !stateProvided(dev) || dev.Get("__wanix_handle9p_state_patch").Truthy() {
+		return
+	}
+	if !stateProvided(dev.Get("handle_fn")) {
+		return
+	}
+
+	dev.Set("get_state", keepJSFunc(js.FuncOf(func(this js.Value, args []js.Value) any {
+		device := this.Get("device")
+		return []any{
+			device.Get("configspace_tagname"),
+			device.Get("configspace_taglen"),
+			device.Get("virtio"),
+			[]any{},
+		}
+	})))
+	dev.Set("set_state", keepJSFunc(js.FuncOf(func(this js.Value, args []js.Value) any {
+		state := args[0]
+		device := this.Get("device")
+		device.Set("configspace_tagname", state.Index(0))
+		device.Set("configspace_taglen", state.Index(1))
+		device.Get("virtio").Call("set_state", state.Index(2))
+		device.Set("virtqueue", device.Get("virtio").Get("queues").Index(0))
+		this.Set("tag_bufchain", js.Global().Get("Map").New(state.Index(3)))
+		return nil
+	})))
+	dev.Set("__wanix_handle9p_state_patch", true)
+}
+
+func handle9PInflight(vm js.Value) int {
+	dev := virtio9PDevice(vm)
+	if !stateProvided(dev) {
+		return 0
+	}
+	tags := dev.Get("tag_bufchain")
+	if !stateProvided(tags) {
+		return 0
+	}
+	size := tags.Get("size")
+	if size.Type() != js.TypeNumber {
+		return 0
+	}
+	return size.Int()
+}
+
 func main() {
 	flag.Parse()
 
-	js.Global().Get("self").Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) any {
-		// todo: handle screen/input/term changes
-		// jsutil.Log("worker message:", args[0])
+	self := js.Global().Get("self")
+	controlCh := make(chan vmControl, 32)
+	var (
+		controlMu       sync.Mutex
+		controlStarted  bool
+		controlQueue    []vmControl
+		initialState    js.Value
+		initialStateSet bool
+	)
+	if globalInitialState := self.Get("initial_state"); stateProvided(globalInitialState) {
+		initialState = globalInitialState
+		initialStateSet = true
+	}
+	self.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) any {
+		ctl, ok := parseControlMessage(args[0].Get("data"))
+		if !ok {
+			// todo: handle screen/input/term changes
+			return nil
+		}
+		if controlNeedsState(ctl.op) && !stateProvided(ctl.state) {
+			self.Call("postMessage", map[string]any{
+				"type":  "v86-control",
+				"op":    ctl.op,
+				"id":    ctl.id,
+				"ok":    false,
+				"error": "missing state",
+			})
+			return nil
+		}
+		controlMu.Lock()
+		if !controlStarted {
+			ctl.preVM = true
+			controlQueue = append(controlQueue, ctl)
+			if ctl.op == controlInitialState {
+				initialState = ctl.state
+				initialStateSet = true
+			}
+			controlMu.Unlock()
+			return nil
+		}
+		controlMu.Unlock()
+		select {
+		case controlCh <- ctl:
+		default:
+			self.Call("postMessage", map[string]any{
+				"type":  "v86-control",
+				"op":    ctl.op,
+				"id":    ctl.id,
+				"ok":    false,
+				"error": "control queue full",
+			})
+		}
 		return nil
 	}))
 
@@ -87,7 +272,18 @@ func main() {
 	var (
 		p9Mu        sync.Mutex
 		p9Callbacks = make(map[uint16]js.Value)
+		p9Saving    bool
 	)
+	p9Pending := func() int {
+		p9Mu.Lock()
+		defer p9Mu.Unlock()
+		return len(p9Callbacks)
+	}
+	p9SetSaving := func(saving bool) {
+		p9Mu.Lock()
+		p9Saving = saving
+		p9Mu.Unlock()
+	}
 	js.Global().Get("worker").Get("p9").Set("onmessage", js.FuncOf(func(this js.Value, args []js.Value) any {
 		data := args[0].Get("data")
 		tag := readTag(data)
@@ -108,6 +304,11 @@ func main() {
 		cb := args[1]
 		tag := readTag(req)
 		p9Mu.Lock()
+		if p9Saving {
+			p9Mu.Unlock()
+			jsutil.Log("p9 request rejected during v86 save-state")
+			return nil
+		}
 		if _, exists := p9Callbacks[tag]; exists {
 			jsutil.Log("p9 tag collision on tag", tag)
 		}
@@ -151,7 +352,95 @@ func main() {
 		},
 	}
 
+	initialStateApplied := false
+	if initialStateSet {
+		loadable, err := stateLoadable(initialState)
+		if err != nil {
+			log.Fatal(err)
+		}
+		opts["initial_state"] = loadable
+		initialStateApplied = true
+	}
+
 	vm := jsmod.Get("V86").New(opts)
+
+	postControl := func(ctl vmControl, ok bool, state js.Value, err error) {
+		msg := map[string]any{
+			"type": "v86-control",
+			"op":   ctl.op,
+			"id":   ctl.id,
+			"ok":   ok,
+		}
+		if err != nil {
+			msg["error"] = err.Error()
+		}
+		if stateProvided(state) {
+			msg["state"] = state
+			self.Call("postMessage", msg, []any{state})
+			return
+		}
+		self.Call("postMessage", msg)
+	}
+	handleControl := func(ctl vmControl) {
+		if ctl.op == controlInitialState && ctl.preVM && initialStateApplied {
+			postControl(ctl, true, js.Undefined(), nil)
+			return
+		}
+		switch ctl.op {
+		case controlPause:
+			_, err := jsutil.AwaitErr(vm.Call("stop"))
+			postControl(ctl, err == nil, js.Undefined(), err)
+		case controlResume:
+			_, err := jsutil.AwaitErr(vm.Call("run"))
+			postControl(ctl, err == nil, js.Undefined(), err)
+		case controlSaveState:
+			if _, err := jsutil.AwaitErr(vm.Call("stop")); err != nil {
+				postControl(ctl, false, js.Undefined(), err)
+				return
+			}
+			p9SetSaving(true)
+			defer p9SetSaving(false)
+			if pending := p9Pending(); pending != 0 {
+				postControl(ctl, false, js.Undefined(), fmt.Errorf("%d 9p callbacks in flight", pending))
+				return
+			}
+			patchHandle9PState(vm)
+			if pending := handle9PInflight(vm); pending != 0 {
+				postControl(ctl, false, js.Undefined(), fmt.Errorf("%d v86 9p requests in flight", pending))
+				return
+			}
+			state, err := jsutil.AwaitErr(vm.Call("save_state"))
+			postControl(ctl, err == nil, state, err)
+		case controlRestoreState, controlInitialState:
+			state, err := stateBuffer(ctl.state)
+			if err != nil {
+				postControl(ctl, false, js.Undefined(), err)
+				return
+			}
+			if pending := p9Pending(); pending != 0 {
+				postControl(ctl, false, js.Undefined(), fmt.Errorf("%d 9p callbacks in flight", pending))
+				return
+			}
+			patchHandle9PState(vm)
+			_, err = jsutil.AwaitErr(vm.Call("restore_state", state))
+			postControl(ctl, err == nil, js.Undefined(), err)
+		default:
+			postControl(ctl, false, js.Undefined(), fmt.Errorf("unknown control %q", ctl.op))
+		}
+	}
+	controlMu.Lock()
+	queuedControls := append([]vmControl(nil), controlQueue...)
+	controlQueue = nil
+	controlStarted = true
+	controlMu.Unlock()
+	go func() {
+		for _, ctl := range queuedControls {
+			handleControl(ctl)
+		}
+		for ctl := range controlCh {
+			handleControl(ctl)
+		}
+	}()
 
 	exportch := js.Global().Get("MessageChannel").New()
 	// Buffer 9p messages on virtio-console1 output and post complete messages to exportch.port1
@@ -234,6 +523,7 @@ func main() {
 	}
 
 	vm.Call("add_listener", "emulator-ready", js.FuncOf(func(this js.Value, args []js.Value) any {
+		patchHandle9PState(vm)
 
 		vm.Get("bus").Call("send", "virtio-console0-resize", []any{
 			100, 100,
