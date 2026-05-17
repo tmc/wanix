@@ -45,6 +45,9 @@ func ArchivePath(fsys iofs.FS, root string, tw *tar.Writer) error {
 			return err
 		}
 		header.Name = path
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			header.Size = 0
+		}
 
 		if err := tw.WriteHeader(header); err != nil {
 			return err
