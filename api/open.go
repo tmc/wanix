@@ -1,6 +1,8 @@
 package api
 
 import (
+	"os"
+
 	"tractor.dev/toolkit-go/duplex/rpc"
 	"tractor.dev/wanix/fs"
 )
@@ -15,7 +17,7 @@ func (s *syscaller) open(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 
-	fd := s.task.OpenFD(f, args[0])
+	fd := s.task.OpenFDWithFlags(f, args[0], os.O_RDONLY)
 	r.Return(uint64(fd))
 }
 
@@ -29,7 +31,7 @@ func (s *syscaller) create(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 
-	fd := s.task.OpenFD(f, args[0])
+	fd := s.task.OpenFDWithFlags(f, args[0], os.O_RDWR|os.O_CREATE|os.O_TRUNC)
 	r.Return(uint64(fd))
 }
 
@@ -58,6 +60,6 @@ func (s *syscaller) openFile(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 
-	fd := s.task.OpenFD(f, path)
+	fd := s.task.OpenFDWithFlags(f, path, int(flags))
 	r.Return(uint64(fd))
 }

@@ -2,8 +2,11 @@ package wanix
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +15,7 @@ import (
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
 	"tractor.dev/wanix/fs/vfs"
+	"tractor.dev/wanix/migration"
 	"tractor.dev/wanix/misc"
 )
 
@@ -76,9 +80,131 @@ func GetWorker(t *Task) any {
 }
 
 type openFile struct {
-	file fs.File
-	path string
-	// more?
+	file       fs.File
+	path       string
+	flags      int
+	flagsKnown bool
+	offset     int64
+	stdio      bool
+	mu         sync.Mutex
+}
+
+func (f *openFile) Close() error {
+	return f.file.Close()
+}
+
+func (f *openFile) Stat() (fs.FileInfo, error) {
+	return f.file.Stat()
+}
+
+func (f *openFile) Read(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	n, err := f.file.Read(p)
+	f.offset += int64(n)
+	return n, err
+}
+
+func (f *openFile) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	w, ok := f.file.(io.Writer)
+	if !ok {
+		return 0, fs.ErrPermission
+	}
+	n, err := w.Write(p)
+	f.offset += int64(n)
+	return n, err
+}
+
+func (f *openFile) ReadAt(p []byte, off int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	r, ok := f.file.(io.ReaderAt)
+	if !ok {
+		return 0, fmt.Errorf("%w: ReadAt", fs.ErrNotSupported)
+	}
+	n, err := r.ReadAt(p, off)
+	if s, ok := f.file.(io.Seeker); ok {
+		if _, seekErr := s.Seek(f.offset, io.SeekStart); seekErr != nil && err == nil {
+			err = seekErr
+		}
+	}
+	return n, err
+}
+
+func (f *openFile) WriteAt(p []byte, off int64) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	w, ok := f.file.(io.WriterAt)
+	if !ok {
+		return 0, fmt.Errorf("%w: WriteAt", fs.ErrNotSupported)
+	}
+	n, err := w.WriteAt(p, off)
+	if s, ok := f.file.(io.Seeker); ok {
+		if _, seekErr := s.Seek(f.offset, io.SeekStart); seekErr != nil && err == nil {
+			err = seekErr
+		}
+	}
+	return n, err
+}
+
+func (f *openFile) Seek(offset int64, whence int) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	s, ok := f.file.(io.Seeker)
+	if !ok {
+		return 0, fmt.Errorf("%w: Seek", fs.ErrNotSupported)
+	}
+	pos, err := s.Seek(offset, whence)
+	if err != nil {
+		return pos, err
+	}
+	f.offset = pos
+	return pos, nil
+}
+
+func (f *openFile) Sync() error {
+	return fs.Sync(f.file)
+}
+
+func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	m := migration.FDManifest{
+		FD:     fd,
+		Path:   f.path,
+		Flags:  f.flags,
+		Offset: f.offset,
+		Stdio:  f.stdio,
+	}
+	if f.stdio {
+		m.Restorable = true
+		return m, nil
+	}
+	var reasons []string
+	if f.path == "" {
+		reasons = append(reasons, "missing path")
+	}
+	if !f.flagsKnown {
+		reasons = append(reasons, "unknown open flags")
+	}
+	if _, ok := f.file.(io.Seeker); !ok {
+		reasons = append(reasons, "file is not seekable")
+	}
+	if len(reasons) != 0 {
+		m.Restorable = false
+		m.Error = strings.Join(reasons, "; ")
+		return m, fmt.Errorf("fd %d %s: %w", fd, m.Error, migration.ErrUnrestorableFD)
+	}
+	m.Restorable = true
+	return m, nil
 }
 
 // NewRoot returns a task, so we dont really have the TaskFS
@@ -186,11 +312,35 @@ func (r *Task) Unbind(srcPath, dstPath string) error {
 }
 
 func (r *Task) OpenFD(file fs.File, path string) int {
+	return r.openFD(file, path, 0, false)
+}
+
+func (r *Task) OpenFDWithFlags(file fs.File, path string, flags int) int {
+	return r.openFD(file, path, flags, true)
+}
+
+func (r *Task) openFD(file fs.File, path string, flags int, flagsKnown bool) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.fdIdx++
-	r.fds[r.fdIdx] = &openFile{file: file, path: path}
+	r.fds[r.fdIdx] = newOpenFile(file, path, flags, flagsKnown, false)
 	return r.fdIdx
+}
+
+func newOpenFile(file fs.File, path string, flags int, flagsKnown, stdio bool) *openFile {
+	f := &openFile{
+		file:       file,
+		path:       path,
+		flags:      flags,
+		flagsKnown: flagsKnown,
+		stdio:      stdio,
+	}
+	if s, ok := file.(io.Seeker); ok {
+		if off, err := s.Seek(0, io.SeekCurrent); err == nil {
+			f.offset = off
+		}
+	}
+	return f
 }
 
 func (r *Task) CloseFD(fd int) error {
@@ -204,30 +354,57 @@ func (r *Task) CloseFD(fd int) error {
 		return fs.ErrInvalid
 	}
 	delete(r.fds, fd)
-	return f.file.Close()
+	return f.Close()
 }
 
 func (r *Task) FD(fd int) (fs.File, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if fd < 0 || fd > r.fdIdx {
+	if fd < 0 || (fd >= 3 && fd > r.fdIdx) {
 		return nil, "", fs.ErrInvalid
 	}
 	if fd < 3 {
-		name := fmt.Sprintf("#task/%s/fd/%d", r.ID(), fd)
-		// this should probably use #task/self but i think there are some
-		// issues to work out for that to work correctly here.
-		stdfile, err := r.NS().Open(name)
-		if err != nil {
-			return nil, "", err
+		if _, ok := r.fds[fd]; !ok {
+			name := fmt.Sprintf("#task/%s/fd/%d", r.ID(), fd)
+			// this should probably use #task/self but i think there are some
+			// issues to work out for that to work correctly here.
+			stdfile, err := r.NS().Open(name)
+			if err != nil {
+				return nil, "", err
+			}
+			r.fds[fd] = newOpenFile(stdfile, name, 0, true, true)
 		}
-		r.fds[fd] = &openFile{file: stdfile, path: name}
 	}
 	f, ok := r.fds[fd]
 	if !ok {
 		return nil, "", fs.ErrInvalid
 	}
-	return f.file, f.path, nil
+	return f, f.path, nil
+}
+
+func (r *Task) FDManifests() ([]migration.FDManifest, error) {
+	r.mu.Lock()
+	fds := make([]int, 0, len(r.fds))
+	for fd := range r.fds {
+		fds = append(fds, fd)
+	}
+	sort.Ints(fds)
+	files := make([]*openFile, len(fds))
+	for i, fd := range fds {
+		files[i] = r.fds[fd]
+	}
+	r.mu.Unlock()
+
+	out := make([]migration.FDManifest, 0, len(fds))
+	var errs []error
+	for i, fd := range fds {
+		m, err := files[i].manifest(fd)
+		out = append(out, m)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return out, errors.Join(errs...)
 }
 
 func (r *Task) Open(name string) (fs.File, error) {
