@@ -88,6 +88,19 @@ export class WanixHandle {
         return (await this.peer.call("ImportArchive", [name, contents])).value;
     }
 
+    async bundleManifest(filesystems=[]) {
+        this.logger(`bundleManifest filesystems(${filesystems.length})`);
+        return (await this.peer.call("BundleManifest", [JSON.stringify(filesystems)])).value;
+    }
+
+    async restoreBundleManifest(manifest) {
+        this.logger(`restoreBundleManifest`);
+        if (typeof manifest !== "string") {
+            manifest = JSON.stringify(manifest);
+        }
+        return (await this.peer.call("RestoreBundleManifest", [manifest])).value;
+    }
+
     async rename(oldname, newname) {
         this.logger(`rename ${oldname} ${newname}`);
         await this.peer.call("Rename", [oldname, newname]);
