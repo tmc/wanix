@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"path/filepath"
 	"slices"
@@ -12,7 +13,10 @@ import (
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
+	"tractor.dev/wanix/migration"
 )
+
+const aliasLabel = "alias"
 
 type Device struct {
 	resources map[string]fs.FS
@@ -50,6 +54,8 @@ func (d *Device) Alloc(kind string) (wanix.Resource, error) {
 	if !slices.Contains(Drivers(d.root), kind) {
 		return nil, fs.ErrNotExist
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.nextID++
 	rid := strconv.Itoa(d.nextID)
 	r := &VM{
@@ -59,6 +65,72 @@ func (d *Device) Alloc(kind string) (wanix.Resource, error) {
 	}
 	d.resources[rid] = r
 	return r, nil
+}
+
+// ImportManifest restores a VM resource descriptor without starting it.
+func (d *Device) ImportManifest(manifest migration.VMManifest) (*VM, error) {
+	id, err := strconv.Atoi(manifest.ID)
+	if err != nil || id <= 0 {
+		return nil, fmt.Errorf("import vm %q: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if manifest.Kind == "" {
+		return nil, fmt.Errorf("import vm %s: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if manifest.StatePath != "" {
+		return nil, fmt.Errorf("import vm %s state: %w", manifest.ID, migration.ErrUnsupported)
+	}
+	if !slices.Contains(Drivers(d.root), manifest.Kind) {
+		return nil, fmt.Errorf("import vm %s kind %q: %w", manifest.ID, manifest.Kind, fs.ErrNotExist)
+	}
+	alias := manifest.Labels[aliasLabel]
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.resources[manifest.ID]; exists {
+		return nil, fmt.Errorf("import vm %s: %w", manifest.ID, fs.ErrExist)
+	}
+	if alias != "" {
+		if _, exists := d.aliases[alias]; exists {
+			return nil, fmt.Errorf("import vm alias %q: %w", alias, fs.ErrExist)
+		}
+	}
+	r := &VM{
+		id:     manifest.ID,
+		alias:  alias,
+		kind:   manifest.Kind,
+		device: d,
+	}
+	d.resources[manifest.ID] = r
+	if alias != "" {
+		d.aliases[alias] = r
+	}
+	if d.nextID < id {
+		d.nextID = id
+	}
+	return r, nil
+}
+
+// Remove deletes a VM resource by ID and rewinds nextID to the remaining maximum.
+func (d *Device) Remove(id string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	r, ok := d.resources[id]
+	if !ok {
+		return
+	}
+	delete(d.resources, id)
+	if vm, ok := r.(*VM); ok && vm.alias != "" {
+		if current, ok := d.aliases[vm.alias]; ok && current == r {
+			delete(d.aliases, vm.alias)
+		}
+	}
+	d.nextID = 0
+	for rid := range d.resources {
+		n, err := strconv.Atoi(rid)
+		if err == nil && d.nextID < n {
+			d.nextID = n
+		}
+	}
 }
 
 // i really wish we could just get back a type from path via resolve

@@ -52,9 +52,16 @@ func (r *Task) ImportBundleManifest(ctx context.Context, manifest migration.Bund
 	return r.fsys.ImportBundleManifest(ctx, manifest, r, lookup)
 }
 
+// RestoreBundleManifest restores a migration bundle manifest into the task's
+// task filesystem. The caller supplies filesystem lookup and optional VM
+// restoration because those resources are owned by the embedding runtime.
+func (r *Task) RestoreBundleManifest(ctx context.Context, manifest migration.BundleManifest, lookup vfs.FSIDLookup, opts BundleRestoreOptions) (*BundleRestore, error) {
+	return r.fsys.restoreBundle(ctx, manifest, r, lookup, opts)
+}
+
 // ValidateBundleRestore reports whether manifest can be restored by this package.
 func ValidateBundleRestore(manifest migration.BundleManifest) error {
-	return checkBundleTaskUnsupported(manifest)
+	return checkBundleRestoreUnsupported(manifest)
 }
 
 // BundleManifest returns a migration manifest for the task filesystem.

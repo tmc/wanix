@@ -11,6 +11,7 @@ import (
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
+	"tractor.dev/wanix/vm"
 )
 
 func (s *syscaller) bundleManifest(r rpc.Responder, c *rpc.Call) {
@@ -56,16 +57,35 @@ func (s *syscaller) restoreBundleManifest(r rpc.Responder, c *rpc.Call) {
 		r.Return(err)
 		return
 	}
-	tasks, err := s.task.Root().ImportBundleManifest(s.task.Context(), manifest, lookup)
+	restored, err := s.task.Root().RestoreBundleManifest(s.task.Context(), manifest, lookup, wanix.BundleRestoreOptions{
+		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
+			return importBundleVM(ctx, s.task.Root(), manifest)
+		},
+	})
 	if err != nil {
 		r.Return(err)
 		return
 	}
-	ids := make([]string, 0, len(tasks))
-	for _, task := range tasks {
+	ids := make([]string, 0, len(restored.Tasks))
+	for _, task := range restored.Tasks {
 		ids = append(ids, task.ID())
 	}
-	r.Return(map[string]any{"tasks": ids})
+	r.Return(map[string]any{"tasks": ids, "vms": restored.VMs})
+}
+
+func importBundleVM(ctx context.Context, root *wanix.Task, manifest migration.VMManifest) (string, func(), error) {
+	device, name, err := fs.ResolveTo[*vm.Device](root.NS(), ctx, "#vm")
+	if err != nil {
+		return "", nil, fmt.Errorf("restore bundle vms: %w", err)
+	}
+	if name != "." {
+		return "", nil, fmt.Errorf("restore bundle vms resolved to %s: %w", name, fs.ErrInvalid)
+	}
+	restored, err := device.ImportManifest(manifest)
+	if err != nil {
+		return "", nil, err
+	}
+	return restored.ID(), func() { device.Remove(restored.ID()) }, nil
 }
 
 type bundleFilesystemRef struct {
