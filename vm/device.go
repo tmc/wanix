@@ -69,15 +69,30 @@ func (d *Device) Alloc(kind string) (wanix.Resource, error) {
 
 // ImportManifest restores a VM resource descriptor without starting it.
 func (d *Device) ImportManifest(manifest migration.VMManifest) (*VM, error) {
+	if manifest.StatePath != "" {
+		return nil, fmt.Errorf("import vm %s state: %w", manifest.ID, migration.ErrUnsupported)
+	}
+	return d.importManifest(manifest, nil)
+}
+
+// ImportManifestWithState restores a VM descriptor with its serialized state.
+func (d *Device) ImportManifestWithState(manifest migration.VMManifest, state []byte) (*VM, error) {
+	if manifest.StatePath == "" {
+		return nil, fmt.Errorf("import vm %s state: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if state == nil {
+		return nil, fmt.Errorf("import vm %s state %s: %w", manifest.ID, manifest.StatePath, fs.ErrInvalid)
+	}
+	return d.importManifest(manifest, state)
+}
+
+func (d *Device) importManifest(manifest migration.VMManifest, state []byte) (*VM, error) {
 	id, err := strconv.Atoi(manifest.ID)
 	if err != nil || id <= 0 {
 		return nil, fmt.Errorf("import vm %q: %w", manifest.ID, fs.ErrInvalid)
 	}
 	if manifest.Kind == "" {
 		return nil, fmt.Errorf("import vm %s: %w", manifest.ID, fs.ErrInvalid)
-	}
-	if manifest.StatePath != "" {
-		return nil, fmt.Errorf("import vm %s state: %w", manifest.ID, migration.ErrUnsupported)
 	}
 	if !slices.Contains(Drivers(d.root), manifest.Kind) {
 		return nil, fmt.Errorf("import vm %s kind %q: %w", manifest.ID, manifest.Kind, fs.ErrNotExist)
@@ -98,6 +113,7 @@ func (d *Device) ImportManifest(manifest migration.VMManifest) (*VM, error) {
 		id:     manifest.ID,
 		alias:  alias,
 		kind:   manifest.Kind,
+		state:  append([]byte(nil), state...),
 		device: d,
 	}
 	d.resources[manifest.ID] = r

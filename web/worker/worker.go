@@ -82,6 +82,7 @@ func (r *Resource) Start(args ...string) error {
 
 	port := sys.Element().Call("_openPort", r.task.ID())
 	p9 := sys.Element().Call("_open9P", r.task.ID())
+	initialState := vmInitialState(r.task)
 
 	r.worker.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) any {
 		go func() {
@@ -130,7 +131,7 @@ func (r *Resource) Start(args ...string) error {
 		return nil
 	}))
 
-	r.worker.Call("postMessage", map[string]any{"worker": map[string]any{
+	worker := map[string]any{
 		"id":   r.id,
 		"tid":  r.task.ID(),
 		"port": port,
@@ -138,10 +139,52 @@ func (r *Resource) Start(args ...string) error {
 		"cmd":  strings.Join(args, " "),
 		"env":  env,
 		"url":  url,
-	}}, []any{port, p9})
+	}
+	transfers := []any{port, p9}
+	if !initialState.IsUndefined() {
+		worker["initial_state"] = initialState
+		transfers = append(transfers, initialState.Get("buffer"))
+	}
+	r.worker.Call("postMessage", map[string]any{"worker": worker}, transfers)
 
 	r.state = "running"
 	return nil
+}
+
+func vmInitialState(t *wanix.Task) js.Value {
+	vmID := ""
+	for _, line := range t.Env() {
+		key, value, ok := strings.Cut(line, "=")
+		if ok && key == "vm" {
+			vmID = value
+			break
+		}
+	}
+	if vmID == "" {
+		return js.Undefined()
+	}
+	rfsys, _, err := fs.Resolve(t.Root().NS(), context.Background(), path.Join("#vm", vmID))
+	if err != nil {
+		log.Println("error resolving vm state", vmID, err)
+		return js.Undefined()
+	}
+	vms, ok := rfsys.(*vm.Device)
+	if !ok {
+		log.Println("error resolving vm state", vmID, "not a vm device")
+		return js.Undefined()
+	}
+	vm, err := vms.Lookup(vmID)
+	if err != nil {
+		log.Println("error looking up vm state", vmID, err)
+		return js.Undefined()
+	}
+	state := vm.State()
+	if len(state) == 0 {
+		return js.Undefined()
+	}
+	buf := js.Global().Get("Uint8Array").New(len(state))
+	js.CopyBytesToJS(buf, state)
+	return buf
 }
 
 func (r *Resource) Open(name string) (fs.File, error) {

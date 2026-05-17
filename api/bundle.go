@@ -81,7 +81,16 @@ func importBundleVM(ctx context.Context, root *wanix.Task, manifest migration.VM
 	if name != "." {
 		return "", nil, fmt.Errorf("restore bundle vms resolved to %s: %w", name, fs.ErrInvalid)
 	}
-	restored, err := device.ImportManifest(manifest)
+	var restored *vm.VM
+	if manifest.StatePath != "" {
+		state, err := fs.ReadFile(root.NS(), manifest.StatePath)
+		if err != nil {
+			return "", nil, fmt.Errorf("restore bundle vm %s state %s: %w", manifest.ID, manifest.StatePath, err)
+		}
+		restored, err = device.ImportManifestWithState(manifest, state)
+	} else {
+		restored, err = device.ImportManifest(manifest)
+	}
 	if err != nil {
 		return "", nil, err
 	}

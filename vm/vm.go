@@ -18,6 +18,7 @@ type VM struct {
 	alias  string
 	kind   string
 	guest  fs.FS
+	state  []byte
 	device *Device
 	mu     sync.Mutex
 	vfs    *vfs.NS
@@ -39,6 +40,20 @@ func (r *VM) Guest() fs.FS {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.guest
+}
+
+// State returns the serialized machine state attached to the VM resource.
+func (r *VM) State() []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]byte(nil), r.state...)
+}
+
+// SetState attaches serialized machine state to the VM resource.
+func (r *VM) SetState(state []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state = append([]byte(nil), state...)
 }
 
 func (r *VM) SetGuest(exported fs.FS) error {

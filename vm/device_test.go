@@ -45,6 +45,32 @@ func TestDeviceImportManifest(t *testing.T) {
 	}
 }
 
+func TestDeviceImportManifestWithState(t *testing.T) {
+	_, device := newTestDevice(t)
+	vm, err := device.ImportManifestWithState(migration.VMManifest{
+		ID:        "2",
+		Kind:      "v86",
+		StatePath: "vm/2.state",
+	}, []byte("state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(vm.State()) != "state" {
+		t.Fatalf("vm state = %q, want state", vm.State())
+	}
+	state := vm.State()
+	state[0] = 'S'
+	if string(vm.State()) != "state" {
+		t.Fatalf("vm state changed through caller slice: %q", vm.State())
+	}
+	if _, err := device.ImportManifestWithState(migration.VMManifest{ID: "3", Kind: "v86"}, []byte("state")); !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("missing state path error = %v, want ErrInvalid", err)
+	}
+	if _, err := device.ImportManifestWithState(migration.VMManifest{ID: "3", Kind: "v86", StatePath: "vm/3.state"}, nil); !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("missing state error = %v, want ErrInvalid", err)
+	}
+}
+
 func TestDeviceImportManifestRejectsInvalidInput(t *testing.T) {
 	_, device := newTestDevice(t)
 	if _, err := device.ImportManifest(migration.VMManifest{ID: "bad", Kind: "v86"}); !errors.Is(err, fs.ErrInvalid) {

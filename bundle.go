@@ -310,11 +310,6 @@ func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool) er
 		if !allowVMs {
 			return fmt.Errorf("restore bundle vms: %w", migration.ErrUnsupported)
 		}
-		for _, vm := range manifest.VMs {
-			if vm.StatePath != "" {
-				return fmt.Errorf("restore bundle vm %s state: %w", vm.ID, migration.ErrUnsupported)
-			}
-		}
 	}
 	if len(manifest.Workers) != 0 {
 		return fmt.Errorf("restore bundle workers: %w", migration.ErrUnsupported)

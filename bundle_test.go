@@ -410,8 +410,9 @@ func TestRestoreBundleRestoresCowfsTaskAndFD(t *testing.T) {
 func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 	manifest := testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{
-			ID:   "7",
-			Kind: "v86",
+			ID:        "7",
+			Kind:      "v86",
+			StatePath: "vm/7.state",
 			Labels: map[string]string{
 				"alias": "guest",
 			},
@@ -435,8 +436,8 @@ func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 	if !reflect.DeepEqual(restored.VMs, []string{"7"}) {
 		t.Fatalf("restored VMs = %#v, want 7", restored.VMs)
 	}
-	if len(restoredVMs) != 1 || restoredVMs[0].Kind != "v86" || restoredVMs[0].Labels["alias"] != "guest" {
-		t.Fatalf("RestoreVM manifests = %#v, want v86 guest", restoredVMs)
+	if len(restoredVMs) != 1 || restoredVMs[0].Kind != "v86" || restoredVMs[0].StatePath != "vm/7.state" || restoredVMs[0].Labels["alias"] != "guest" {
+		t.Fatalf("RestoreVM manifests = %#v, want v86 guest with state", restoredVMs)
 	}
 }
 
@@ -613,18 +614,6 @@ func TestRestoreBundleFailsClosedForUnsupportedResources(t *testing.T) {
 	}), BundleRestoreOptions{})
 	if !errors.Is(err, migration.ErrUnsupported) {
 		t.Fatalf("RestoreBundle VM error = %v, want ErrUnsupported", err)
-	}
-
-	_, err = RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{
-		VMs: []migration.VMManifest{{ID: "1", Kind: "v86", StatePath: "vm.state"}},
-	}), BundleRestoreOptions{
-		RestoreVM: func(context.Context, migration.VMManifest) (string, func(), error) {
-			t.Fatal("RestoreVM called for unsupported VM state")
-			return "", nil, nil
-		},
-	})
-	if !errors.Is(err, migration.ErrUnsupported) {
-		t.Fatalf("RestoreBundle VM state error = %v, want ErrUnsupported", err)
 	}
 
 	_, err = RestoreBundle(context.Background(), testBundleManifest(migration.BundleManifest{

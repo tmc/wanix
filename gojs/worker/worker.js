@@ -11,6 +11,9 @@ self.addEventListener("message", async (e) => {
     const fs = new WanixHandle(e.data.worker.port);
     globalThis.worker = e.data.worker;
     globalThis.sys = fs; // deprecated
+    if (e.data.worker.initial_state) {
+        globalThis.initial_state = e.data.worker.initial_state;
+    }
     const tid = e.data.worker.tid;
     const env = (await fs.readText(`${TASKNS}/${tid}/env`)).trim().split("\n");
     const args = (await fs.readText(`${TASKNS}/${tid}/cmd`)).trim().split(" ");

@@ -257,16 +257,20 @@ func TestRestoreBundleManifestRPCRollsBackRootInPlace(t *testing.T) {
 }
 
 func TestRestoreBundleManifestRPCRestoresVMDescriptors(t *testing.T) {
-	root, _ := newBundleAPIRoot(t)
+	root, backing := newBundleAPIRoot(t)
 	dev := bindBundleAPIVMDevice(t, root)
 	client := newBundleAPIClient(t, root)
+	if err := fs.WriteFile(backing, "vm.state", []byte("state"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	manifest := migration.BundleManifest{
 		Version: migration.BundleManifestVersion,
 		Mode:    migration.ModeMigrate,
 		VMs: []migration.VMManifest{{
-			ID:   "3",
-			Kind: "v86",
+			ID:        "3",
+			Kind:      "v86",
+			StatePath: "mnt/vm.state",
 			Labels: map[string]string{
 				"alias": "guest",
 			},
@@ -291,6 +295,9 @@ func TestRestoreBundleManifestRPCRestoresVMDescriptors(t *testing.T) {
 	}
 	if restored.Alias() != "guest" || restored.Kind() != "v86" {
 		t.Fatalf("restored vm = id %q kind %q alias %q", restored.ID(), restored.Kind(), restored.Alias())
+	}
+	if string(restored.State()) != "state" {
+		t.Fatalf("restored vm state = %q, want state", restored.State())
 	}
 }
 
@@ -391,7 +398,7 @@ func TestRestoreBundleManifestRPCValidatesBeforeLookup(t *testing.T) {
 			want: migration.ErrInvalidManifest,
 		},
 		{
-			name: "unsupported vm state",
+			name: "unsupported workers",
 			manifest: migration.BundleManifest{
 				Version: migration.BundleManifestVersion,
 				Mode:    migration.ModeMigrate,
@@ -400,11 +407,7 @@ func TestRestoreBundleManifestRPCValidatesBeforeLookup(t *testing.T) {
 					Kind:   "memfs",
 					Source: "missing",
 				}},
-				VMs: []migration.VMManifest{{
-					ID:        "1",
-					Kind:      "v86",
-					StatePath: "vm.state",
-				}},
+				Workers: []migration.WorkerManifest{{ID: "worker1", Kind: "browser"}},
 			},
 			want: migration.ErrUnsupported,
 		},
