@@ -359,6 +359,11 @@ func (u *FS) copyIfNeeded(name string) (string, error) {
 		return "", err
 	}
 	if copyNeeded {
+		if dir := filepath.Dir(name); dir != "." {
+			if err := fs.MkdirAll(u.Overlay, dir, 0o755); err != nil {
+				return "", err
+			}
+		}
 		if err := fs.CopyFS(u.Base, name, u.Overlay, name); err != nil {
 			return "", err
 		}
@@ -606,9 +611,6 @@ func (u *FS) Remove(name string) error {
 
 	// 5. If file doesn't exist anywhere, return error
 	if !existsInBase && !existsInOverlay {
-		if err := u.tombstone(target); err != nil {
-			log.Println("tombstone persistence error", err)
-		}
 		return fs.ErrNotExist
 	}
 
@@ -688,10 +690,12 @@ func (u *FS) Remove(name string) error {
 		}
 	}
 
-	// 9. tombstone it to record it was deleted
-	// log.Println("tombstoning", target)
-	if err := u.tombstone(target); err != nil {
-		return err
+	// 9. Tombstone only base-origin paths. Overlay-only files are gone once
+	// removed from the overlay layer.
+	if existsInBase {
+		if err := u.tombstone(target); err != nil {
+			return err
+		}
 	}
 
 	// 10. Clean up any renames that pointed to this file
