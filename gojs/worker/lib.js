@@ -4012,6 +4012,10 @@ var WanixHandle = class {
     }
     return (await this.peer.call("AppendFile", [name, contents])).value;
   }
+  async archive(name = ".") {
+    this.logger(`archive ${name}`);
+    return (await this.peer.call("Archive", [name])).value;
+  }
   async rename(oldname, newname) {
     this.logger(`rename ${oldname} ${newname}`);
     await this.peer.call("Rename", [oldname, newname]);

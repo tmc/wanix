@@ -3,12 +3,26 @@ package tarfs
 import (
 	"archive/tar"
 	"io"
-	"io/fs"
-	"os"
+	iofs "io/fs"
+
+	"tractor.dev/wanix/fs"
 )
 
-func Archive(fsys fs.FS, tw *tar.Writer) error {
-	return fs.WalkDir(fsys, ".", func(path string, entry fs.DirEntry, err error) error {
+// Archive writes fsys to tw as a tar archive.
+func Archive(fsys iofs.FS, tw *tar.Writer) error {
+	return ArchivePath(fsys, ".", tw)
+}
+
+// ArchivePath writes the subtree rooted at root to tw as a tar archive.
+func ArchivePath(fsys iofs.FS, root string, tw *tar.Writer) error {
+	if root == "" {
+		root = "."
+	}
+	sub, err := fs.Sub(fsys, root)
+	if err != nil {
+		return err
+	}
+	return iofs.WalkDir(sub, ".", func(path string, entry iofs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -18,42 +32,37 @@ func Archive(fsys fs.FS, tw *tar.Writer) error {
 			return err
 		}
 
-		// Create tar header
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return err
-		}
-
-		// Update the name to maintain directory structure
-		header.Name = path
-
-		// Handle symlinks
-		if info.Mode()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
+		var link string
+		if info.Mode()&iofs.ModeSymlink != 0 {
+			link, err = fs.Readlink(sub, path)
 			if err != nil {
 				return err
 			}
-			header.Linkname = link
 		}
 
-		// Write header
+		header, err := tar.FileInfoHeader(info, link)
+		if err != nil {
+			return err
+		}
+		header.Name = path
+
 		if err := tw.WriteHeader(header); err != nil {
 			return err
 		}
 
-		// If it's not a regular file, we're done
 		if !info.Mode().IsRegular() {
 			return nil
 		}
 
-		// Open and copy file contents
-		f, err := fsys.Open(path)
+		f, err := sub.Open(path)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
 
 		_, err = io.Copy(tw, f)
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
 		return err
 	})
 }
