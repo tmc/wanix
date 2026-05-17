@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-composite-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-composite-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-composite-restore" debug>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-composite-restore" service-worker="./wanix-sw.js" service-worker-scope="./" debug>
+    </wanix-system>
+
+    <script type="module">
+        const dec = new TextDecoder();
+
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function controlled() {
+            if (!("serviceWorker" in navigator)) {
+                throw new Error("service workers unavailable");
+            }
+            await navigator.serviceWorker.ready;
+            const reloadKey = "wanix-composite-restore-reloaded";
+            if (sessionStorage.getItem(reloadKey) !== "1") {
+                sessionStorage.setItem(reloadKey, "1");
+                window.location.reload();
+                await new Promise(() => {});
+            }
+            if (navigator.serviceWorker.controller) {
+                sessionStorage.removeItem(reloadKey);
+                return;
+            }
+            await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error("service worker controller timeout")), 5000);
+                navigator.serviceWorker.addEventListener("controllerchange", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                }, {once: true});
+            });
+            sessionStorage.removeItem(reloadKey);
+        }
+
+        function bindField(bind, name) {
+            return bind[name] ?? bind[name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+        }
+
+        const progress = {};
+        window.wanixBundleCompositeResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+            await controlled();
+
+            progress.step = "memfs";
+            for (const name of ["base", "overlay", "graphbase", "graphover", "public"]) {
+                await source.root.bindMemFS(name);
+                await target.root.bindMemFS(name);
+            }
+
+            progress.step = "seed";
+            await source.root.writeFile("base/keep.txt", "base-keep\n");
+            await source.root.writeFile("base/remove.txt", "base-remove\n");
+            await source.root.writeFile("overlay/overlay.txt", "overlay-only\n");
+            await source.root.bindCowFS("base", "overlay", "mnt", ".wh");
+            await source.root.writeFile("mnt/fd.txt", "abcdef");
+            await source.root.writeFile("mnt/new.txt", "cow-new\n");
+            await source.root.remove("mnt/remove.txt");
+
+            await source.root.writeFile("graphbase/shared.txt", "graph-base\n");
+            await source.root.writeFile("graphover/shared.txt", "graph-overlay\n");
+            await source.root.bind("graphbase", "graph");
+            await source.root.bind("graphover", "graph");
+
+            await source.root.writeFile("public/proof.txt", "composite-restored\n");
+
+            progress.step = "fd";
+            const fd = await source.root.open("mnt/fd.txt");
+            const prefix = dec.decode(await source.root.read(fd, 3));
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "basefs", source: "base"},
+                {id: "overlayfs", source: "overlay"},
+                {
+                    id: "cowfs",
+                    kind: "cowfs",
+                    source: "mnt",
+                    base_fs_id: "basefs",
+                    overlay_fs_id: "overlayfs",
+                    whiteout_dir: ".wh",
+                    archive: false,
+                },
+                {id: "graphbasefs", source: "graphbase"},
+                {id: "graphoverfs", source: "graphover"},
+                {id: "publicfs", source: "public"},
+            ]));
+            const task = (bundle.manifest.tasks || []).find(task => task.id === "1") || {};
+            const graphBinds = ((task.namespace || {}).binds || []).filter(bind => bindField(bind, "dst_path") === "graph");
+            const graphIDs = graphBinds.map(bind => bindField(bind, "src_fs_id"));
+            const fdManifest = ((task.fds || []).find(manifest => manifest.fd === Number(fd))) || {};
+
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "verify";
+            let removed = false;
+            try {
+                await target.root.readText("mnt/remove.txt");
+            } catch {
+                removed = true;
+            }
+            const fdRest = dec.decode(await target.root.read(fd, 3));
+            const response = await fetch(new URL("./:/public/proof.txt?cachebust=" + Date.now(), window.location.href), {cache: "no-store"});
+            const body = await response.text();
+            const result = {
+                ok: removed &&
+                    prefix === "abc" &&
+                    fdManifest.offset === 3 &&
+                    fdRest === "def" &&
+                    await target.root.readText("mnt/keep.txt") === "base-keep\n" &&
+                    await target.root.readText("mnt/new.txt") === "cow-new\n" &&
+                    await target.root.readText("mnt/overlay.txt") === "overlay-only\n" &&
+                    await target.root.readText("graph/shared.txt") === "graph-overlay\n" &&
+                    graphIDs[0] === "graphoverfs" &&
+                    graphIDs[1] === "graphbasefs" &&
+                    response.ok &&
+                    response.headers.get("X-Service-Worker") &&
+                    body === "composite-restored\n",
+                removed,
+                prefix,
+                fdRest,
+                fdOffset: fdManifest.offset,
+                graphIDs,
+                serviceHeader: response.headers.get("X-Service-Worker"),
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+                tasks: restore.tasks || [],
+                body,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>
