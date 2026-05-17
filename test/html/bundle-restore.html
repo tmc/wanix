@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-restore" debug>
+        <wanix-bind dst="mnt" src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-restore" debug>
+        <wanix-bind dst="mnt" src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <script type="module">
+        const filesystems = [
+            {id: "rootfs", kind: "memfs", source: "mnt", archive: true},
+            {id: "taskfs", kind: "taskfs", source: "#task"},
+            {id: "wanixfs", kind: "system", source: "#wanix"},
+            {id: "termfs", kind: "system", source: "#term"},
+            {id: "webfs", kind: "system", source: "#web"},
+            {id: "vmfs", kind: "system", source: "#vm"},
+            {id: "pipefs", kind: "system", source: "#pipe"},
+            {id: "signalfs", kind: "system", source: "#signal"},
+            {id: "ramfs", kind: "system", source: "#ramfs"},
+            {id: "jsfs", kind: "system", source: "#js"},
+        ];
+
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        window.wanixBundleHarnessResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            await Promise.all([ready(source), ready(target)]);
+
+            await source.root.writeFile("mnt/proof.txt", "browser-bundle-ok\n");
+            await source.root.makeDirAll("mnt/sub");
+            await source.root.writeFile("mnt/sub/nested.txt", "nested-ok\n");
+
+            const bundle = await source.root.exportBundle(filesystems);
+            const restore = await target.root.importBundle(bundle);
+            const proof = await target.root.readText("mnt/proof.txt");
+            const nested = await target.root.readText("mnt/sub/nested.txt");
+            const result = {
+                ok: proof === "browser-bundle-ok\n" && nested === "nested-ok\n",
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+                tasks: restore.tasks || [],
+                proof,
+                nested,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })();
+    </script>
+</body>
+</html>

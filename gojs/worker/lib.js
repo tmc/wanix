@@ -4030,7 +4030,7 @@ var WanixHandle = class {
   async restoreBundleManifest(manifest) {
     this.logger(`restoreBundleManifest`);
     if (typeof manifest !== "string") {
-      manifest = JSON.stringify(manifest);
+      manifest = JSON.stringify(normalizeBundleManifest(manifest));
     }
     return (await this.peer.call("RestoreBundleManifest", [manifest])).value;
   }
@@ -4222,6 +4222,13 @@ function bundleArchiveData(data) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   return data;
+}
+function normalizeBundleManifest(manifest) {
+  const out = { ...manifest };
+  if (typeof out.created_at === "number") {
+    out.created_at = new Date(out.created_at * 1e3).toISOString();
+  }
+  return out;
 }
 if (!ReadableStream.prototype[Symbol.asyncIterator]) {
   ReadableStream.prototype[Symbol.asyncIterator] = async function* () {

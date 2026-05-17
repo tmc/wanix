@@ -527,7 +527,7 @@ func TestHandleJSBundleManifestWrappers(t *testing.T) {
 		},
 		{
 			name: "restore bundle manifest",
-			re:   `(?s)async\s+restoreBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+manifest\s*!==\s*"string".*?manifest\s*=\s*JSON\.stringify\(\s*manifest\s*\).*?peer\.call\(\s*"RestoreBundleManifest"\s*,\s*\[\s*manifest\s*\]\s*\)`,
+			re:   `(?s)async\s+restoreBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+manifest\s*!==\s*"string".*?manifest\s*=\s*JSON\.stringify\(\s*normalizeBundleManifest\(\s*manifest\s*\)\s*\).*?peer\.call\(\s*"RestoreBundleManifest"\s*,\s*\[\s*manifest\s*\]\s*\)`,
 		},
 	} {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
@@ -557,6 +557,10 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 		{
 			name: "archive data",
 			re:   `(?s)function\s+bundleArchiveData\s*\(\s*data\s*\).*?data\s+instanceof\s+Uint8Array.*?data\s+instanceof\s+ArrayBuffer.*?ArrayBuffer\.isView\(\s*data\s*\)`,
+		},
+		{
+			name: "manifest normalization",
+			re:   `(?s)function\s+normalizeBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+out\.created_at\s*===\s*"number".*?toISOString\(\s*\)`,
 		},
 	} {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
@@ -617,6 +621,24 @@ const want = JSON.stringify([
 ]);
 if (got !== want) {
 	throw new Error("calls = " + got + ", want " + want);
+}
+
+const rpcCalls = [];
+const rpc = Object.create(WanixHandle.prototype);
+rpc.logger = () => {};
+rpc.peer = {
+	async call(name, args) {
+		rpcCalls.push([name, JSON.parse(args[0]).created_at]);
+		return {value: true};
+	},
+};
+await rpc.restoreBundleManifest({
+	version: "wanix-migration-v1",
+	mode: "migrate",
+	created_at: 1,
+});
+if (JSON.stringify(rpcCalls) !== JSON.stringify([["RestoreBundleManifest", "1970-01-01T00:00:01.000Z"]])) {
+	throw new Error("rpc calls = " + JSON.stringify(rpcCalls));
 }
 `
 	cmd := exec.Command("node", "--input-type=module", "-e", script)
