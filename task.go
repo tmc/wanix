@@ -370,17 +370,19 @@ func (d *TaskFS) Register(kind string, driver TaskDriver) {
 func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 	d.mu.Lock()
 	driver, ok := d.types[kind]
-	d.mu.Unlock()
 	if !ok {
+		d.mu.Unlock()
 		return nil, fs.ErrNotExist
 	}
 	d.nextID++
-	rid := strconv.Itoa(d.nextID)
+	id := d.nextID
+	rid := strconv.Itoa(id)
+	d.mu.Unlock()
 
 	p := &Task{
 		fsys:   d,
 		driver: driver,
-		id:     d.nextID,
+		id:     id,
 		kind:   kind,
 		fds:    make(map[int]*openFile),
 		fdIdx:  3,
@@ -392,6 +394,8 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 	} else {
 		p.ns = vfs.New(ctx)
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.resources[rid] = p
 	return p, nil
 }
