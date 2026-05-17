@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-bindgraph-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-bindgraph-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-bindgraph-restore" debug>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-bindgraph-restore" debug>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        function bindField(bind, name) {
+            return bind[name] ?? bind[name.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+        }
+
+        const progress = {};
+        window.wanixBundleBindGraphResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+
+            progress.step = "memfs";
+            await source.root.bindMemFS("base");
+            await source.root.bindMemFS("overlay");
+            await target.root.bindMemFS("base");
+            await target.root.bindMemFS("overlay");
+
+            progress.step = "seed";
+            await source.root.writeFile("base/base-only.txt", "base-only\n");
+            await source.root.writeFile("base/shared.txt", "base-shared\n");
+            await source.root.writeFile("overlay/overlay-only.txt", "overlay-only\n");
+            await source.root.writeFile("overlay/shared.txt", "overlay-shared\n");
+
+            progress.step = "bind";
+            await source.root.bind("base", "graph");
+            await source.root.bind("overlay", "graph");
+            progress.sourceShared = await source.root.readText("graph/shared.txt");
+            progress.sourceBase = await source.root.readText("graph/base-only.txt");
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "basefs", source: "base"},
+                {id: "overlayfs", source: "overlay"},
+            ]));
+            const task = (bundle.manifest.tasks || []).find(task => task.id === "1") || {};
+            const graphBinds = ((task.namespace || {}).binds || []).filter(bind => bindField(bind, "dst_path") === "graph");
+            const graphIDs = graphBinds.map(bind => bindField(bind, "src_fs_id"));
+            const graphIndexes = graphBinds.map(bind => bindField(bind, "index"));
+            progress.graphIDs = graphIDs;
+            progress.graphIndexes = graphIndexes;
+
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "verify";
+            const shared = await target.root.readText("graph/shared.txt");
+            const baseOnly = await target.root.readText("graph/base-only.txt");
+            const overlayOnly = await target.root.readText("graph/overlay-only.txt");
+            const result = {
+                ok: progress.sourceShared === "overlay-shared\n" &&
+                    progress.sourceBase === "base-only\n" &&
+                    graphIDs.length === 2 &&
+                    graphIDs[0] === "overlayfs" &&
+                    graphIDs[1] === "basefs" &&
+                    graphIndexes[0] === 0 &&
+                    graphIndexes[1] === 1 &&
+                    shared === "overlay-shared\n" &&
+                    baseOnly === "base-only\n" &&
+                    overlayOnly === "overlay-only\n",
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+                graphIDs,
+                graphIndexes,
+                tasks: restore.tasks || [],
+                shared,
+                baseOnly,
+                overlayOnly,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>
