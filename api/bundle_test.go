@@ -17,6 +17,7 @@ import (
 	"tractor.dev/wanix/fs/memfs"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
+	"tractor.dev/wanix/vm"
 )
 
 func TestBundleFilesystemResolverExportsManifest(t *testing.T) {
@@ -193,6 +194,118 @@ func TestRestoreBundleManifestRPCBoundary(t *testing.T) {
 	}
 }
 
+func TestRestoreBundleManifestRPCRestoresVMDescriptors(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	dev := bindBundleAPIVMDevice(t, root)
+	client := newBundleAPIClient(t, root)
+
+	manifest := migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		VMs: []migration.VMManifest{{
+			ID:   "3",
+			Kind: "v86",
+			Labels: map[string]string{
+				"alias": "guest",
+			},
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		VMs []string `json:"vms"`
+	}
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.VMs) != 1 || result.VMs[0] != "3" {
+		t.Fatalf("restored vms = %#v, want vm 3", result.VMs)
+	}
+	restored, err := dev.Lookup("3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Alias() != "guest" || restored.Kind() != "v86" {
+		t.Fatalf("restored vm = id %q kind %q alias %q", restored.ID(), restored.Kind(), restored.Alias())
+	}
+}
+
+func TestRestoreBundleManifestRPCRollsBackVMs(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	dev := bindBundleAPIVMDevice(t, root)
+	client := newBundleAPIClient(t, root)
+
+	manifest := migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		VMs: []migration.VMManifest{{
+			ID:   "3",
+			Kind: "v86",
+		}},
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:     "rootfs",
+			Kind:   "memfs",
+			Source: "missing",
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result any
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err == nil {
+		t.Fatal("RestoreBundleManifest error = nil, want filesystem lookup error")
+	}
+	if _, err := dev.Lookup("3"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Lookup rolled back vm error = %v, want ErrNotExist", err)
+	}
+	next, err := dev.Alloc("v86")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID() != "1" {
+		t.Fatalf("next vm id after rollback = %q, want 1", next.ID())
+	}
+}
+
+func TestRestoreBundleManifestRPCRollsBackPartialVMs(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	dev := bindBundleAPIVMDevice(t, root)
+	client := newBundleAPIClient(t, root)
+
+	manifest := migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		VMs: []migration.VMManifest{{
+			ID:   "3",
+			Kind: "v86",
+		}, {
+			ID:   "4",
+			Kind: "missing",
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result any
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err == nil {
+		t.Fatal("RestoreBundleManifest error = nil, want vm import error")
+	}
+	if _, err := dev.Lookup("3"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Lookup rolled back vm error = %v, want ErrNotExist", err)
+	}
+	next, err := dev.Alloc("v86")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID() != "1" {
+		t.Fatalf("next vm id after rollback = %q, want 1", next.ID())
+	}
+}
+
 func TestRestoreBundleManifestRPCValidatesBeforeLookup(t *testing.T) {
 	root, _ := newBundleAPIRoot(t)
 	client := newBundleAPIClient(t, root)
@@ -216,7 +329,7 @@ func TestRestoreBundleManifestRPCValidatesBeforeLookup(t *testing.T) {
 			want: migration.ErrInvalidManifest,
 		},
 		{
-			name: "unsupported resource",
+			name: "unsupported vm state",
 			manifest: migration.BundleManifest{
 				Version: migration.BundleManifestVersion,
 				Mode:    migration.ModeMigrate,
@@ -226,8 +339,9 @@ func TestRestoreBundleManifestRPCValidatesBeforeLookup(t *testing.T) {
 					Source: "missing",
 				}},
 				VMs: []migration.VMManifest{{
-					ID:   "vm0",
-					Kind: "v86",
+					ID:        "1",
+					Kind:      "v86",
+					StatePath: "vm.state",
 				}},
 			},
 			want: migration.ErrUnsupported,
@@ -327,6 +441,18 @@ func newBundleAPIRoot(t *testing.T) (*wanix.Task, fs.FS) {
 		t.Fatal(err)
 	}
 	return root, backing
+}
+
+func bindBundleAPIVMDevice(t *testing.T, root *wanix.Task) *vm.Device {
+	t.Helper()
+	dev := vm.New(root)
+	if err := root.NS().Bind(dev, ".", "#vm"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(memfs.New(), ".", "#vm/v86"); err != nil {
+		t.Fatal(err)
+	}
+	return dev
 }
 
 func newBundleAPIClient(t *testing.T, root *wanix.Task) *talk.Peer {
