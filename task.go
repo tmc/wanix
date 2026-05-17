@@ -412,9 +412,11 @@ func (r *Task) FDManifests() ([]migration.FDManifest, error) {
 func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error) {
 	r.mu.Lock()
 	id := r.ID()
+	state := taskStateLocked(r)
 	manifest := migration.TaskManifest{
 		ID:        id,
 		Kind:      r.kind,
+		State:     state,
 		Alias:     r.alias,
 		Command:   r.cmd,
 		Exit:      r.exit,
@@ -436,6 +438,27 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 	}
 	manifest.FDs = fds
 	return manifest, errors.Join(errs...)
+}
+
+func taskStateLocked(r *Task) migration.TaskState {
+	if r.worker != nil {
+		return migration.TaskStateRunning
+	}
+	if r.exit != "" {
+		return migration.TaskStateExited
+	}
+	return migration.TaskStateCreated
+}
+
+func checkTaskManifestState(manifest migration.TaskManifest) error {
+	switch manifest.State {
+	case "", migration.TaskStateCreated, migration.TaskStateExited:
+		return nil
+	case migration.TaskStateRunning:
+		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrUnsupported)
+	default:
+		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrInvalidManifest)
+	}
 }
 
 func (r *Task) importFDManifests(fds []migration.FDManifest) error {
@@ -668,6 +691,9 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 	if manifest.Kind == "" {
 		return nil, fmt.Errorf("import task %s: %w", manifest.ID, fs.ErrInvalid)
 	}
+	if err := checkTaskManifestState(manifest); err != nil {
+		return nil, err
+	}
 
 	d.mu.Lock()
 	driver, ok := d.types[manifest.Kind]
@@ -738,6 +764,9 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	}
 	if manifest.Kind == "" {
 		return taskRestore{}, fmt.Errorf("restore task %s: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if err := checkTaskManifestState(manifest); err != nil {
+		return taskRestore{}, err
 	}
 
 	d.mu.Lock()

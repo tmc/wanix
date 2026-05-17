@@ -134,6 +134,9 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	if manifest.ID != source.ID() || manifest.Kind != "auto" || manifest.Alias != "shell" {
 		t.Fatalf("manifest identity = %#v", manifest)
 	}
+	if manifest.State != migration.TaskStateExited {
+		t.Fatalf("manifest state = %q, want exited", manifest.State)
+	}
 	if manifest.Exit != "7" {
 		t.Fatalf("manifest exit = %q, want 7", manifest.Exit)
 	}
@@ -233,6 +236,41 @@ func TestTaskImportManifestFailsClosedOnFDs(t *testing.T) {
 	}
 	if errors.Is(err, migration.ErrUnrestorableFD) {
 		t.Fatalf("ImportManifest missing path error = %v, want filesystem error", err)
+	}
+}
+
+func TestTaskManifestState(t *testing.T) {
+	taskfs := NewTaskFS()
+	created, err := taskfs.Alloc("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := created.Manifest(func(fs.FS) (string, error) {
+		return "", migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.State != migration.TaskStateCreated {
+		t.Fatalf("created task state = %q, want created", manifest.State)
+	}
+
+	manifest = migration.TaskManifest{
+		ID:    "2",
+		Kind:  "auto",
+		State: migration.TaskStateRunning,
+	}
+	if _, err := taskfs.ImportManifest(context.Background(), manifest, nil, func(string) (fs.FS, error) {
+		return nil, migration.ErrUnknownFilesystem
+	}); !errors.Is(err, migration.ErrUnsupported) {
+		t.Fatalf("ImportManifest running state error = %v, want ErrUnsupported", err)
+	}
+
+	manifest.State = "mystery"
+	if _, err := taskfs.ImportManifest(context.Background(), manifest, nil, func(string) (fs.FS, error) {
+		return nil, migration.ErrUnknownFilesystem
+	}); !errors.Is(err, migration.ErrInvalidManifest) {
+		t.Fatalf("ImportManifest invalid state error = %v, want ErrInvalidManifest", err)
 	}
 }
 

@@ -107,6 +107,7 @@ func ValidateBundleManifest(manifest BundleManifest) error {
 type TaskManifest struct {
 	ID        string            `json:"id"`
 	Kind      string            `json:"kind,omitempty"`
+	State     TaskState         `json:"state,omitempty"`
 	Alias     string            `json:"alias,omitempty"`
 	Command   string            `json:"command,omitempty"`
 	Exit      string            `json:"exit,omitempty"`
@@ -116,6 +117,14 @@ type TaskManifest struct {
 	Namespace NamespaceManifest `json:"namespace,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 }
+
+type TaskState string
+
+const (
+	TaskStateCreated TaskState = "created"
+	TaskStateRunning TaskState = "running"
+	TaskStateExited  TaskState = "exited"
+)
 
 type FDManifest struct {
 	FD         int    `json:"fd"`
