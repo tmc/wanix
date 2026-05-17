@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
 	"tractor.dev/wanix/fs/memfs"
+	"tractor.dev/wanix/fs/pipe"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
 )
@@ -86,6 +88,128 @@ func TestTaskFDManifestsFailClosed(t *testing.T) {
 	}
 	if fds[0].Error == "" {
 		t.Fatalf("fd manifest missing error: %#v", fds[0])
+	}
+}
+
+func TestTaskFDManifestsPipeZeroOffsetRestorable(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcePipe, _, _ := pipe.NewFS(false)
+	if err := root.NS().Bind(sourcePipe, ".", "pipe", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	file, err := fs.OpenFile(root.NS(), "pipe/data", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := root.OpenFDWithFlags(file, "pipe/data", os.O_RDWR)
+
+	fds, err := root.FDManifests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fds) != 1 {
+		t.Fatalf("got %d fd manifests, want 1", len(fds))
+	}
+	got := fds[0]
+	if got.FD != fd || got.Kind != "pipe" || got.Path != "pipe/data" || got.Offset != 0 || !got.Restorable {
+		t.Fatalf("unexpected pipe fd manifest: %#v", got)
+	}
+
+	target, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPipe, _, reader := pipe.NewFS(false)
+	if err := target.NS().Bind(targetPipe, ".", "pipe", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.importFDManifests(fds); err != nil {
+		t.Fatal(err)
+	}
+	restored, _, err := target.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, ok := restored.(interface {
+		Write([]byte) (int, error)
+	})
+	if !ok {
+		t.Fatalf("restored pipe fd is %T, want writer", restored)
+	}
+	if _, err := writer.Write([]byte("pipe-ok")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len("pipe-ok"))
+	n, err := reader.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(buf[:n]) != "pipe-ok" {
+		t.Fatalf("pipe read = %q, want pipe-ok", buf[:n])
+	}
+}
+
+func TestTaskFDManifestsPipeOffsetFailClosed(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsys, _, _ := pipe.NewFS(false)
+	if err := root.NS().Bind(fsys, ".", "pipe", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	file, err := fs.OpenFile(root.NS(), "pipe/data", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := root.OpenFDWithFlags(file, "pipe/data", os.O_RDWR)
+	opened, _, err := root.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, ok := opened.(interface {
+		Write([]byte) (int, error)
+	})
+	if !ok {
+		t.Fatalf("pipe fd is %T, want writer", opened)
+	}
+	if _, err := writer.Write([]byte("busy")); err != nil {
+		t.Fatal(err)
+	}
+
+	fds, err := root.FDManifests()
+	if !errors.Is(err, migration.ErrUnrestorableFD) {
+		t.Fatalf("FDManifests error = %v, want ErrUnrestorableFD", err)
+	}
+	if len(fds) != 1 {
+		t.Fatalf("got %d fd manifests, want 1", len(fds))
+	}
+	got := fds[0]
+	if got.Kind != "pipe" || got.Restorable || !strings.Contains(got.Error, "pipe stream offset") {
+		t.Fatalf("unexpected pipe fd manifest: %#v", got)
+	}
+
+	target, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPipe, _, _ := pipe.NewFS(false)
+	if err := target.NS().Bind(targetPipe, ".", "pipe", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	err = target.importFDManifests([]migration.FDManifest{{
+		FD:         fd,
+		Kind:       "pipe",
+		Path:       "pipe/data",
+		Flags:      os.O_RDWR,
+		Offset:     1,
+		Restorable: true,
+	}})
+	if !errors.Is(err, migration.ErrUnrestorableFD) {
+		t.Fatalf("importFDManifests error = %v, want ErrUnrestorableFD", err)
 	}
 }
 
@@ -222,6 +346,18 @@ func TestTaskImportManifestFailsClosedOnFDs(t *testing.T) {
 	}
 	if _, err := taskfs.Lookup("1"); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("Lookup after failed import = %v, want ErrNotExist", err)
+	}
+
+	manifest.FDs = []migration.FDManifest{{
+		FD:         3,
+		Kind:       "socket",
+		Path:       "socket",
+		Flags:      os.O_RDWR,
+		Restorable: true,
+	}}
+	_, err = taskfs.ImportManifest(context.Background(), manifest, nil, lookup)
+	if !errors.Is(err, migration.ErrUnrestorableFD) || !strings.Contains(err.Error(), "socket") {
+		t.Fatalf("ImportManifest socket fd error = %v, want ErrUnrestorableFD mentioning socket", err)
 	}
 
 	manifest.FDs = []migration.FDManifest{{

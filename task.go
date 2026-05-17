@@ -184,6 +184,9 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 		Offset: f.offset,
 		Stdio:  f.stdio,
 	}
+	if info, err := f.file.Stat(); err == nil {
+		m.Kind = fdKind(info.Mode())
+	}
 	if f.stdio {
 		m.Restorable = true
 		return m, nil
@@ -196,7 +199,13 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 		reasons = append(reasons, "unknown open flags")
 	}
 	if _, ok := f.file.(io.Seeker); !ok {
-		reasons = append(reasons, "file is not seekable")
+		if m.Kind == "pipe" && f.offset == 0 {
+			// A fresh path-backed pipe endpoint can be reopened by path.
+		} else if m.Kind == "pipe" {
+			reasons = append(reasons, "pipe stream offset")
+		} else {
+			reasons = append(reasons, "file is not seekable")
+		}
 	}
 	if len(reasons) != 0 {
 		m.Restorable = false
@@ -205,6 +214,27 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 	}
 	m.Restorable = true
 	return m, nil
+}
+
+func fdKind(mode fs.FileMode) string {
+	switch {
+	case mode&fs.ModeNamedPipe != 0:
+		return "pipe"
+	case mode&fs.ModeSocket != 0:
+		return "socket"
+	case mode&fs.ModeDevice != 0 && mode&fs.ModeCharDevice != 0:
+		return "char-device"
+	case mode&fs.ModeDevice != 0:
+		return "device"
+	case mode&fs.ModeDir != 0:
+		return "dir"
+	case mode&fs.ModeSymlink != 0:
+		return "symlink"
+	case mode&fs.ModeIrregular != 0:
+		return "irregular"
+	default:
+		return "file"
+	}
 }
 
 // NewRoot returns a task, so we dont really have the TaskFS
@@ -478,6 +508,9 @@ func (r *Task) importFDManifests(fds []migration.FDManifest) error {
 		if manifest.Path == "" {
 			return fail(fmt.Errorf("restore fd %d missing path: %w", manifest.FD, migration.ErrUnrestorableFD))
 		}
+		if err := checkFDManifestKind(manifest); err != nil {
+			return fail(fmt.Errorf("restore fd %d %w", manifest.FD, err))
+		}
 		if _, exists := opened[manifest.FD]; exists {
 			return fail(fmt.Errorf("restore fd %d duplicate: %w", manifest.FD, migration.ErrUnrestorableFD))
 		}
@@ -501,6 +534,20 @@ func (r *Task) importFDManifests(fds []migration.FDManifest) error {
 	r.fds = opened
 	r.fdIdx = fdIdx
 	return nil
+}
+
+func checkFDManifestKind(manifest migration.FDManifest) error {
+	switch manifest.Kind {
+	case "", "file":
+		return nil
+	case "pipe":
+		if manifest.Offset != 0 {
+			return fmt.Errorf("pipe stream offset: %w", migration.ErrUnrestorableFD)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s descriptor: %w", manifest.Kind, migration.ErrUnrestorableFD)
+	}
 }
 
 func closeOpenFiles(files map[int]*openFile) {

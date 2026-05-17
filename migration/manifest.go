@@ -309,6 +309,7 @@ const (
 
 type FDManifest struct {
 	FD         int    `json:"fd"`
+	Kind       string `json:"kind,omitempty"`
 	Path       string `json:"path,omitempty"`
 	Flags      int    `json:"flags,omitempty"`
 	Offset     int64  `json:"offset,omitempty"`

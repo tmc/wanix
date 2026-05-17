@@ -37,6 +37,7 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 			Exit:    "0",
 			FDs: []FDManifest{{
 				FD:         3,
+				Kind:       "file",
 				Path:       "tmp/log",
 				Flags:      2,
 				Offset:     7,
@@ -73,6 +74,9 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 	}
 	if len(out.Tasks) != 1 || len(out.Tasks[0].FDs) != 1 {
 		t.Fatalf("round trip lost task fd manifests: %#v", out.Tasks)
+	}
+	if got := out.Tasks[0].FDs[0].Kind; got != "file" {
+		t.Fatalf("fd kind = %q, want file", got)
 	}
 	if got := out.Tasks[0].Alias; got != "shell" {
 		t.Fatalf("task alias = %q, want shell", got)
