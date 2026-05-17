@@ -213,6 +213,59 @@ func TestTaskFDManifestsPipeOffsetFailClosed(t *testing.T) {
 	}
 }
 
+func TestTaskFDManifestsDirectoryRestorable(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backing := memfs.New()
+	if err := fs.WriteFile(backing, "data.txt", []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(backing, ".", "tmp", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	file, err := fs.OpenFile(root.NS(), "tmp", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := root.OpenFDWithFlags(file, "tmp", os.O_RDONLY)
+
+	fds, err := root.FDManifests()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fds) != 1 {
+		t.Fatalf("got %d fd manifests, want 1", len(fds))
+	}
+	got := fds[0]
+	if got.FD != fd || got.Kind != "dir" || got.Path != "tmp" || got.Offset != 0 || !got.Restorable {
+		t.Fatalf("unexpected directory fd manifest: %#v", got)
+	}
+
+	target, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := target.NS().Bind(backing, ".", "tmp", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := target.importFDManifests(fds); err != nil {
+		t.Fatal(err)
+	}
+	restored, _, err := target.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := restored.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("restored fd mode = %v, want directory", info.Mode())
+	}
+}
+
 func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	sourceTasks := NewTaskFS()
 	source, err := sourceTasks.Alloc("auto", nil)
@@ -358,6 +411,18 @@ func TestTaskImportManifestFailsClosedOnFDs(t *testing.T) {
 	_, err = taskfs.ImportManifest(context.Background(), manifest, nil, lookup)
 	if !errors.Is(err, migration.ErrUnrestorableFD) || !strings.Contains(err.Error(), "socket") {
 		t.Fatalf("ImportManifest socket fd error = %v, want ErrUnrestorableFD mentioning socket", err)
+	}
+
+	manifest.FDs = []migration.FDManifest{{
+		FD:         3,
+		Kind:       "dir",
+		Path:       "dir",
+		Offset:     1,
+		Restorable: true,
+	}}
+	_, err = taskfs.ImportManifest(context.Background(), manifest, nil, lookup)
+	if !errors.Is(err, migration.ErrUnrestorableFD) || !strings.Contains(err.Error(), "directory stream offset") {
+		t.Fatalf("ImportManifest directory fd error = %v, want ErrUnrestorableFD mentioning offset", err)
 	}
 
 	manifest.FDs = []migration.FDManifest{{
