@@ -1,5 +1,17 @@
 import * as duplex from "@progrium/duplex";
 
+const systemBundleFilesystems = [
+    {id: "taskfs", kind: "taskfs", source: "#task"},
+    {id: "wanixfs", kind: "system", source: "#wanix"},
+    {id: "termfs", kind: "system", source: "#term"},
+    {id: "webfs", kind: "system", source: "#web"},
+    {id: "vmfs", kind: "system", source: "#vm"},
+    {id: "pipefs", kind: "system", source: "#pipe"},
+    {id: "signalfs", kind: "system", source: "#signal"},
+    {id: "ramfs", kind: "system", source: "#ramfs"},
+    {id: "jsfs", kind: "system", source: "#js"},
+];
+
 export class WanixHandle {
     constructor(port) {
         const sess = new duplex.Session(new duplex.PortConn(port));
@@ -295,6 +307,17 @@ export class WanixHandle {
     }
 }
 
+export function bundleFilesystems(archives=[]) {
+    return [
+        ...archives.map(normalizeBundleFilesystem),
+        ...systemBundleFilesystems.map(desc => ({...desc})),
+    ];
+}
+
+if (typeof window !== "undefined") {
+    window["WanixBundleFilesystems"] = bundleFilesystems;
+}
+
 function bundleArchiveSource(desc, request) {
     if (!request) {
         return "";
@@ -319,6 +342,20 @@ function bundleArchiveData(data) {
         return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
     }
     return data;
+}
+
+function normalizeBundleFilesystem(desc) {
+    if (typeof desc === "string") {
+        return {id: desc, kind: "memfs", source: desc, archive: true};
+    }
+    if (!desc.source && desc.archive === undefined) {
+        return {...desc};
+    }
+    return {
+        kind: "memfs",
+        archive: true,
+        ...desc,
+    };
 }
 
 function normalizeBundleManifest(manifest) {

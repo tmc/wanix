@@ -15,19 +15,6 @@
     </wanix-system>
 
     <script type="module">
-        const filesystems = [
-            {id: "rootfs", kind: "memfs", source: "mnt", archive: true},
-            {id: "taskfs", kind: "taskfs", source: "#task"},
-            {id: "wanixfs", kind: "system", source: "#wanix"},
-            {id: "termfs", kind: "system", source: "#term"},
-            {id: "webfs", kind: "system", source: "#web"},
-            {id: "vmfs", kind: "system", source: "#vm"},
-            {id: "pipefs", kind: "system", source: "#pipe"},
-            {id: "signalfs", kind: "system", source: "#signal"},
-            {id: "ramfs", kind: "system", source: "#ramfs"},
-            {id: "jsfs", kind: "system", source: "#js"},
-        ];
-
         function ready(el) {
             if (el.isReady) {
                 return Promise.resolve();
@@ -47,7 +34,9 @@
             await source.root.makeDirAll("mnt/sub");
             await source.root.writeFile("mnt/sub/nested.txt", "nested-ok\n");
 
-            const bundle = await source.root.exportBundle(filesystems);
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "mnt"},
+            ]));
             const restore = await target.root.importBundle(bundle);
             const proof = await target.root.readText("mnt/proof.txt");
             const nested = await target.root.readText("mnt/sub/nested.txt");

@@ -8372,6 +8372,17 @@ var Conn = class {
 };
 
 // api/handle.js
+var systemBundleFilesystems = [
+  { id: "taskfs", kind: "taskfs", source: "#task" },
+  { id: "wanixfs", kind: "system", source: "#wanix" },
+  { id: "termfs", kind: "system", source: "#term" },
+  { id: "webfs", kind: "system", source: "#web" },
+  { id: "vmfs", kind: "system", source: "#vm" },
+  { id: "pipefs", kind: "system", source: "#pipe" },
+  { id: "signalfs", kind: "system", source: "#signal" },
+  { id: "ramfs", kind: "system", source: "#ramfs" },
+  { id: "jsfs", kind: "system", source: "#js" }
+];
 var WanixHandle2 = class {
   constructor(port) {
     const sess = new Session(new Conn(port));
@@ -8621,6 +8632,15 @@ var WanixHandle2 = class {
     });
   }
 };
+function bundleFilesystems(archives = []) {
+  return [
+    ...archives.map(normalizeBundleFilesystem),
+    ...systemBundleFilesystems.map((desc) => ({ ...desc }))
+  ];
+}
+if (typeof window !== "undefined") {
+  window["WanixBundleFilesystems"] = bundleFilesystems;
+}
 function bundleArchiveSource(desc, request) {
   if (!request) {
     return "";
@@ -8644,6 +8664,19 @@ function bundleArchiveData(data) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   return data;
+}
+function normalizeBundleFilesystem(desc) {
+  if (typeof desc === "string") {
+    return { id: desc, kind: "memfs", source: desc, archive: true };
+  }
+  if (!desc.source && desc.archive === void 0) {
+    return { ...desc };
+  }
+  return {
+    kind: "memfs",
+    archive: true,
+    ...desc
+  };
 }
 function normalizeBundleManifest(manifest) {
   const out = { ...manifest };

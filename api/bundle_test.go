@@ -562,6 +562,10 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 			name: "manifest normalization",
 			re:   `(?s)function\s+normalizeBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+out\.created_at\s*===\s*"number".*?toISOString\(\s*\)`,
 		},
+		{
+			name: "filesystem helper",
+			re:   `(?s)export\s+function\s+bundleFilesystems\s*\(\s*archives\s*=\s*\[\]\s*\).*?normalizeBundleFilesystem.*?systemBundleFilesystems.*?WanixBundleFilesystems`,
+		},
 	} {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
 			t.Fatalf("handle.js missing %s wrapper", tt.name)
@@ -574,7 +578,7 @@ func TestHandleJSBundleHarnessSmoke(t *testing.T) {
 		t.Skip("node not found")
 	}
 	script := `
-import {WanixHandle} from "./api/handle.js";
+import {WanixHandle, bundleFilesystems} from "./api/handle.js";
 
 const h = Object.create(WanixHandle.prototype);
 const calls = [];
@@ -639,6 +643,27 @@ await rpc.restoreBundleManifest({
 });
 if (JSON.stringify(rpcCalls) !== JSON.stringify([["RestoreBundleManifest", "1970-01-01T00:00:01.000Z"]])) {
 	throw new Error("rpc calls = " + JSON.stringify(rpcCalls));
+}
+
+const helper = bundleFilesystems([{id: "rootfs", source: "mnt"}]);
+if (JSON.stringify(helper.slice(0, 2)) !== JSON.stringify([
+	{kind: "memfs", archive: true, id: "rootfs", source: "mnt"},
+	{id: "taskfs", kind: "taskfs", source: "#task"},
+])) {
+	throw new Error("helper = " + JSON.stringify(helper));
+}
+
+const cow = bundleFilesystems([
+	{id: "basefs", source: "base"},
+	{id: "overlayfs", source: "overlay"},
+	{id: "cowfs", kind: "cowfs", base_fs_id: "basefs", overlay_fs_id: "overlayfs", whiteout_dir: ".wh"},
+]);
+if (JSON.stringify(cow.slice(0, 3)) !== JSON.stringify([
+	{kind: "memfs", archive: true, id: "basefs", source: "base"},
+	{kind: "memfs", archive: true, id: "overlayfs", source: "overlay"},
+	{id: "cowfs", kind: "cowfs", base_fs_id: "basefs", overlay_fs_id: "overlayfs", whiteout_dir: ".wh"},
+])) {
+	throw new Error("cow helper = " + JSON.stringify(cow));
 }
 `
 	cmd := exec.Command("node", "--input-type=module", "-e", script)
