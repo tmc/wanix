@@ -407,6 +407,84 @@ func (r *Task) FDManifests() ([]migration.FDManifest, error) {
 	return out, errors.Join(errs...)
 }
 
+// Manifest returns the task state needed to restore its namespace and open file
+// table from a migration bundle.
+func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error) {
+	r.mu.Lock()
+	id := r.ID()
+	manifest := migration.TaskManifest{
+		ID:        id,
+		Kind:      r.kind,
+		Alias:     r.alias,
+		Command:   r.cmd,
+		Directory: r.dir,
+		Env:       append([]string(nil), r.env...),
+	}
+	ns := r.ns
+	r.mu.Unlock()
+
+	var errs []error
+	namespace, err := ns.ExportManifest(id, resolve)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	manifest.Namespace = namespace
+	fds, err := r.FDManifests()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	manifest.FDs = fds
+	return manifest, errors.Join(errs...)
+}
+
+func (r *Task) importFDManifests(fds []migration.FDManifest) error {
+	opened := make(map[int]*openFile, len(fds))
+	fdIdx := r.fdIdx
+	fail := func(err error) error {
+		closeOpenFiles(opened)
+		return err
+	}
+	for _, manifest := range fds {
+		if !manifest.Restorable {
+			return fail(fmt.Errorf("restore fd %d %s: %w", manifest.FD, manifest.Error, migration.ErrUnrestorableFD))
+		}
+		if manifest.FD < 0 {
+			return fail(fmt.Errorf("restore fd %d: %w", manifest.FD, migration.ErrUnrestorableFD))
+		}
+		if manifest.Path == "" {
+			return fail(fmt.Errorf("restore fd %d missing path: %w", manifest.FD, migration.ErrUnrestorableFD))
+		}
+		if _, exists := opened[manifest.FD]; exists {
+			return fail(fmt.Errorf("restore fd %d duplicate: %w", manifest.FD, migration.ErrUnrestorableFD))
+		}
+		file, err := fs.OpenFile(r.NS(), manifest.Path, manifest.Flags, 0)
+		if err != nil {
+			return fail(fmt.Errorf("restore fd %d %s: %w", manifest.FD, manifest.Path, err))
+		}
+		if manifest.Offset != 0 {
+			if _, err := fs.Seek(file, manifest.Offset, io.SeekStart); err != nil {
+				file.Close()
+				return fail(fmt.Errorf("restore fd %d seek: %w", manifest.FD, migration.ErrUnrestorableFD))
+			}
+		}
+		opened[manifest.FD] = newOpenFile(file, manifest.Path, manifest.Flags, true, manifest.Stdio)
+		if manifest.FD > fdIdx {
+			fdIdx = manifest.FD
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fds = opened
+	r.fdIdx = fdIdx
+	return nil
+}
+
+func closeOpenFiles(files map[int]*openFile) {
+	for _, file := range files {
+		file.Close()
+	}
+}
+
 func (r *Task) Open(name string) (fs.File, error) {
 	return r.OpenContext(context.Background(), name)
 }
@@ -575,6 +653,80 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 	defer d.mu.Unlock()
 	d.resources[rid] = p
 	return p, nil
+}
+
+// ImportManifest restores a task from a migration manifest without starting it.
+func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskManifest, parent *Task, lookup vfs.FSIDLookup) (*Task, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	id, err := strconv.Atoi(manifest.ID)
+	if err != nil || id <= 0 {
+		return nil, fmt.Errorf("import task %q: %w", manifest.ID, fs.ErrInvalid)
+	}
+	if manifest.Kind == "" {
+		return nil, fmt.Errorf("import task %s: %w", manifest.ID, fs.ErrInvalid)
+	}
+
+	d.mu.Lock()
+	driver, ok := d.types[manifest.Kind]
+	if !ok {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("import task %s kind %q: %w", manifest.ID, manifest.Kind, fs.ErrNotExist)
+	}
+	if _, exists := d.resources[manifest.ID]; exists {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("import task %s: %w", manifest.ID, fs.ErrExist)
+	}
+	if manifest.Alias != "" {
+		if _, exists := d.aliases[manifest.Alias]; exists {
+			d.mu.Unlock()
+			return nil, fmt.Errorf("import task alias %q: %w", manifest.Alias, fs.ErrExist)
+		}
+	}
+	d.mu.Unlock()
+
+	task := &Task{
+		fsys:   d,
+		driver: driver,
+		parent: parent,
+		id:     id,
+		alias:  manifest.Alias,
+		kind:   manifest.Kind,
+		cmd:    manifest.Command,
+		env:    append([]string(nil), manifest.Env...),
+		dir:    manifest.Directory,
+		fds:    make(map[int]*openFile),
+		fdIdx:  3,
+	}
+	taskCtx := context.WithValue(ctx, TaskContextKey, task)
+	namespace, err := vfs.ImportManifest(taskCtx, manifest.Namespace, lookup)
+	if err != nil {
+		return nil, err
+	}
+	task.ns = namespace
+	if err := task.importFDManifests(manifest.FDs); err != nil {
+		return nil, err
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if _, exists := d.resources[manifest.ID]; exists {
+		closeOpenFiles(task.fds)
+		return nil, fmt.Errorf("import task %s: %w", manifest.ID, fs.ErrExist)
+	}
+	if manifest.Alias != "" {
+		if _, exists := d.aliases[manifest.Alias]; exists {
+			closeOpenFiles(task.fds)
+			return nil, fmt.Errorf("import task alias %q: %w", manifest.Alias, fs.ErrExist)
+		}
+		d.aliases[manifest.Alias] = task
+	}
+	d.resources[manifest.ID] = task
+	if d.nextID < id {
+		d.nextID = id
+	}
+	return task, nil
 }
 
 func (d *TaskFS) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {
