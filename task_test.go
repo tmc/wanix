@@ -97,6 +97,7 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	}
 	source.alias = "shell"
 	source.cmd = "rc -c test"
+	source.exit = "7"
 	source.dir = "tmp"
 	source.env = []string{"A=B", "C=D"}
 
@@ -133,6 +134,9 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	if manifest.ID != source.ID() || manifest.Kind != "auto" || manifest.Alias != "shell" {
 		t.Fatalf("manifest identity = %#v", manifest)
 	}
+	if manifest.Exit != "7" {
+		t.Fatalf("manifest exit = %q, want 7", manifest.Exit)
+	}
 	if len(manifest.FDs) != 1 || manifest.FDs[0].FD != fd || manifest.FDs[0].Offset != 3 {
 		t.Fatalf("manifest fds = %#v, want fd %d offset 3", manifest.FDs, fd)
 	}
@@ -149,6 +153,13 @@ func TestTaskManifestImportRestoresNamespaceAndFDs(t *testing.T) {
 	}
 	if restored.ID() != source.ID() || restored.Cmd() != "rc -c test" || restored.Dir() != "tmp" || restored.Alias() != "shell" {
 		t.Fatalf("restored task = id %s cmd %q dir %q alias %q", restored.ID(), restored.Cmd(), restored.Dir(), restored.Alias())
+	}
+	exit, err := fs.ReadFile(restored, "exit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exit) != "7\n" {
+		t.Fatalf("restored exit = %q, want 7\\n", exit)
 	}
 	if got := restored.Env(); !reflectStringSlicesEqual(got, []string{"A=B", "C=D"}) {
 		t.Fatalf("restored env = %#v", got)

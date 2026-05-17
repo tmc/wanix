@@ -215,6 +215,13 @@ func TestRestoreBundleManifestRPCRestoresRootInPlace(t *testing.T) {
 	if root.Alias() != "migrated-root" || root.Cmd() != "rc -c migrated" || root.Dir() != "mnt" {
 		t.Fatalf("root state = alias %q cmd %q dir %q", root.Alias(), root.Cmd(), root.Dir())
 	}
+	exit, err := fs.ReadFile(root, "exit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(exit) != "0\n" {
+		t.Fatalf("root exit = %q, want 0\\n", exit)
+	}
 	id, err := fs.ReadFile(root.NS(), "#task/migrated-root/id")
 	if err != nil {
 		t.Fatal(err)
@@ -504,6 +511,7 @@ func rootInPlaceBundleManifest() migration.BundleManifest {
 			Kind:      "auto",
 			Alias:     "migrated-root",
 			Command:   "rc -c migrated",
+			Exit:      "0",
 			Directory: "mnt",
 			Env:       []string{"A=B"},
 			Namespace: migration.NamespaceManifest{

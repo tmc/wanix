@@ -417,6 +417,7 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 		Kind:      r.kind,
 		Alias:     r.alias,
 		Command:   r.cmd,
+		Exit:      r.exit,
 		Directory: r.dir,
 		Env:       append([]string(nil), r.env...),
 	}
@@ -694,6 +695,7 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 		alias:  manifest.Alias,
 		kind:   manifest.Kind,
 		cmd:    manifest.Command,
+		exit:   manifest.Exit,
 		env:    append([]string(nil), manifest.Env...),
 		dir:    manifest.Directory,
 		fds:    make(map[int]*openFile),
@@ -757,6 +759,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	oldAlias := task.alias
 	oldKind := task.kind
 	oldCmd := task.cmd
+	oldExit := task.exit
 	oldEnv := append([]string(nil), task.env...)
 	oldDir := task.dir
 	oldNS := task.ns
@@ -780,12 +783,13 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	newFDs := tmp.fds
 	newFDIdx := tmp.fdIdx
 
-	apply := func(driver TaskDriver, alias, kind, cmd string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int) {
+	apply := func(driver TaskDriver, alias, kind, cmd, exit string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int) {
 		task.mu.Lock()
 		task.driver = driver
 		task.alias = alias
 		task.kind = kind
 		task.cmd = cmd
+		task.exit = exit
 		task.env = append([]string(nil), env...)
 		task.dir = dir
 		task.ns = ns
@@ -806,13 +810,13 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 		d.mu.Unlock()
 	}
 
-	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx)
+	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Exit, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx)
 	setAlias(oldAlias, manifest.Alias)
 
 	return taskRestore{
 		rollback: func() {
 			closeOpenFiles(newFDs)
-			apply(oldDriver, oldAlias, oldKind, oldCmd, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx)
+			apply(oldDriver, oldAlias, oldKind, oldCmd, oldExit, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx)
 			setAlias(manifest.Alias, oldAlias)
 		},
 		commit: func() {

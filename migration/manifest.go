@@ -109,6 +109,7 @@ type TaskManifest struct {
 	Kind      string            `json:"kind,omitempty"`
 	Alias     string            `json:"alias,omitempty"`
 	Command   string            `json:"command,omitempty"`
+	Exit      string            `json:"exit,omitempty"`
 	Directory string            `json:"directory,omitempty"`
 	Env       []string          `json:"env,omitempty"`
 	FDs       []FDManifest      `json:"fds,omitempty"`

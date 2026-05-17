@@ -33,6 +33,7 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 			Kind:    "gojs",
 			Alias:   "shell",
 			Command: "rc",
+			Exit:    "0",
 			FDs: []FDManifest{{
 				FD:         3,
 				Path:       "tmp/log",
@@ -74,6 +75,9 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 	}
 	if got := out.Tasks[0].Alias; got != "shell" {
 		t.Fatalf("task alias = %q, want shell", got)
+	}
+	if got := out.Tasks[0].Exit; got != "0" {
+		t.Fatalf("task exit = %q, want 0", got)
 	}
 	if got := out.Filesystems[0].OverlayFSID; got != "overlayfs" {
 		t.Fatalf("filesystem overlay id = %q, want overlayfs", got)
