@@ -3,12 +3,26 @@ package wanix
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/cowfs"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
 )
+
+const BundleManifestVersion = "wanix-migration-v1"
+
+// BundleManifestOptions configures task filesystem manifest export.
+type BundleManifestOptions struct {
+	Version     string
+	Mode        migration.Mode
+	CreatedAt   time.Time
+	Components  []migration.ComponentDescriptor
+	Filesystems []migration.FilesystemDescriptor
+	Resolve     vfs.FSIDResolver
+}
 
 // VMRestoreFunc restores a VM resource descriptor and returns an undo function.
 type VMRestoreFunc func(context.Context, migration.VMManifest) (id string, rollback func(), err error)
@@ -26,6 +40,89 @@ type BundleRestore struct {
 	Filesystems map[string]fs.FS
 	Tasks       []*Task
 	VMs         []string
+}
+
+// BundleManifest returns a migration manifest for the task filesystem.
+//
+// The caller supplies the filesystem descriptors and resolver because only the
+// embedding runtime knows how a filesystem should be serialized or reconnected.
+// Live worker handles and task exports are rejected until those resource layers
+// have migration descriptors.
+func (d *TaskFS) BundleManifest(opts BundleManifestOptions) (migration.BundleManifest, error) {
+	if opts.Resolve == nil {
+		return migration.BundleManifest{}, fmt.Errorf("export bundle filesystem resolver: %w", migration.ErrUnknownFilesystem)
+	}
+	version := opts.Version
+	if version == "" {
+		version = BundleManifestVersion
+	}
+	mode := opts.Mode
+	if mode == "" {
+		mode = migration.ModeMigrate
+	}
+	created := opts.CreatedAt
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+
+	tasks := d.tasksSnapshot()
+	out := migration.BundleManifest{
+		Version:     version,
+		Mode:        mode,
+		CreatedAt:   created,
+		Components:  append([]migration.ComponentDescriptor(nil), opts.Components...),
+		Filesystems: append([]migration.FilesystemDescriptor(nil), opts.Filesystems...),
+		Tasks:       make([]migration.TaskManifest, 0, len(tasks)),
+	}
+	for _, task := range tasks {
+		if err := task.checkBundleExportable(); err != nil {
+			return migration.BundleManifest{}, err
+		}
+		manifest, err := task.Manifest(opts.Resolve)
+		if err != nil {
+			return migration.BundleManifest{}, err
+		}
+		out.Tasks = append(out.Tasks, manifest)
+	}
+	return out, nil
+}
+
+func (d *TaskFS) tasksSnapshot() []*Task {
+	d.mu.Lock()
+	ids := make([]string, 0, len(d.resources))
+	for id := range d.resources {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return numericIDLess(ids[i], ids[j])
+	})
+	tasks := make([]*Task, 0, len(ids))
+	for _, id := range ids {
+		if task, ok := d.resources[id].(*Task); ok {
+			tasks = append(tasks, task)
+		}
+	}
+	d.mu.Unlock()
+	return tasks
+}
+
+func numericIDLess(a, b string) bool {
+	if len(a) != len(b) {
+		return len(a) < len(b)
+	}
+	return a < b
+}
+
+func (r *Task) checkBundleExportable() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.worker != nil {
+		return fmt.Errorf("export task %s worker: %w", r.ID(), migration.ErrUnsupported)
+	}
+	if r.export != nil {
+		return fmt.Errorf("export task %s filesystem export: %w", r.ID(), migration.ErrUnsupported)
+	}
+	return nil
 }
 
 // RestoreBundle restores filesystems and tasks described by manifest.

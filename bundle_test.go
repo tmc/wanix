@@ -5,13 +5,204 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"sync"
 	"testing"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/cowfs"
 	"tractor.dev/wanix/fs/memfs"
+	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
 )
+
+func TestTaskFSBundleManifestRoundTrip(t *testing.T) {
+	backing := memfs.New()
+	if err := fs.WriteFile(backing, "file.txt", []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extra := memfs.New()
+	if err := fs.WriteFile(extra, "marker.txt", []byte("extra"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourceTasks := NewTaskFS()
+	source, err := sourceTasks.Alloc("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.alias = "shell"
+	source.cmd = "rc -c test"
+	source.dir = "mnt"
+	source.env = []string{"A=B", "C=D"}
+	if err := source.NS().Bind(backing, ".", "mnt", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.NS().Bind(extra, ".", "extra", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	file, err := fs.OpenFile(source.NS(), "mnt/file.txt", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := source.OpenFDWithFlags(file, "mnt/file.txt", os.O_RDONLY)
+	open, _, err := source.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 3)
+	if _, err := open.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := sourceTasks.BundleManifest(BundleManifestOptions{
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:   "rootfs",
+			Kind: "memfs",
+		}, {
+			ID:   "extra",
+			Kind: "memfs",
+		}},
+		Resolve: func(candidate fs.FS) (string, error) {
+			if candidate == backing {
+				return "rootfs", nil
+			}
+			if candidate == extra {
+				return "extra", nil
+			}
+			return "", migration.ErrUnknownFilesystem
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Version != BundleManifestVersion || manifest.Mode != migration.ModeMigrate || len(manifest.Tasks) != 1 {
+		t.Fatalf("manifest header/tasks = %#v", manifest)
+	}
+	restored, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
+		Filesystems: map[string]fs.FS{"rootfs": backing, "extra": extra},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := restored.Tasks[0]
+	if task.Alias() != "shell" || task.Cmd() != "rc -c test" || task.Dir() != "mnt" {
+		t.Fatalf("restored metadata alias=%q cmd=%q dir=%q", task.Alias(), task.Cmd(), task.Dir())
+	}
+	if !reflect.DeepEqual(task.Env(), []string{"A=B", "C=D"}) {
+		t.Fatalf("restored env = %#v", task.Env())
+	}
+	data, err := fs.ReadFile(task.NS(), "extra/marker.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "extra" {
+		t.Fatalf("restored extra bind = %q, want extra", data)
+	}
+	restoredFD, _, err := task.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := make([]byte, 1)
+	if _, err := restoredFD.Read(next); err != nil {
+		t.Fatal(err)
+	}
+	if string(next) != "d" {
+		t.Fatalf("restored fd next byte = %q, want d", next)
+	}
+}
+
+func TestTaskFSBundleManifestOrdersTasks(t *testing.T) {
+	taskfs := NewTaskFS()
+	for i := 0; i < 10; i++ {
+		if _, err := taskfs.Alloc("auto", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest, err := taskfs.BundleManifest(BundleManifestOptions{
+		Resolve: func(fs.FS) (string, error) {
+			return "", migration.ErrUnknownFilesystem
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, task := range manifest.Tasks {
+		got = append(got, task.ID)
+	}
+	want := []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("task order = %#v, want %#v", got, want)
+	}
+}
+
+func TestTaskFSBundleManifestConcurrentAlloc(t *testing.T) {
+	taskfs := NewTaskFS()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errc := make(chan error, 2)
+	manifestOpts := BundleManifestOptions{
+		Resolve: func(fs.FS) (string, error) {
+			return "", migration.ErrUnknownFilesystem
+		},
+	}
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			if _, err := taskfs.Alloc("auto", nil); err != nil {
+				errc <- err
+				return
+			}
+		}
+		errc <- nil
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			if _, err := taskfs.BundleManifest(manifestOpts); err != nil {
+				errc <- err
+				return
+			}
+		}
+		errc <- nil
+	}()
+	close(start)
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestTaskFSBundleManifestFailsClosed(t *testing.T) {
+	taskfs := NewTaskFS()
+	task, err := taskfs.Alloc("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := BundleManifestOptions{
+		Resolve: func(fs.FS) (string, error) {
+			return "", migration.ErrUnknownFilesystem
+		},
+	}
+	SetWorker(task, struct{}{})
+	if _, err := taskfs.BundleManifest(opts); !errors.Is(err, migration.ErrUnsupported) {
+		t.Fatalf("BundleManifest worker error = %v, want ErrUnsupported", err)
+	}
+	SetWorker(task, nil)
+	Export(task, memfs.New())
+	if _, err := taskfs.BundleManifest(opts); !errors.Is(err, migration.ErrUnsupported) {
+		t.Fatalf("BundleManifest export error = %v, want ErrUnsupported", err)
+	}
+	if _, err := taskfs.BundleManifest(BundleManifestOptions{}); !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("BundleManifest nil resolver error = %v, want ErrUnknownFilesystem", err)
+	}
+}
 
 func TestRestoreBundleRestoresCowfsTaskAndFD(t *testing.T) {
 	base := memfs.New()
