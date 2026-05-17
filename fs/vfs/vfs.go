@@ -41,6 +41,9 @@ func (m BindMode) String() string {
 
 type FSIDResolver func(fs.FS) (string, error)
 
+// FSIDLookup resolves a serialized filesystem ID back to a filesystem.
+type FSIDLookup func(string) (fs.FS, error)
+
 // BindAllocator is an interface that can be implemented by a filesystem
 // to allocate a new filesystem for a binding.
 type BindAllocator interface {
@@ -351,6 +354,97 @@ func (ns *NS) ExportManifest(taskID string, resolve FSIDResolver) (migration.Nam
 		}
 	}
 	return out, nil
+}
+
+// ImportManifest rebuilds a namespace from a migration manifest.
+//
+// The manifest indexes define the binding order. ImportManifest restores that
+// order directly instead of replaying Bind operations, because Bind interprets
+// modes as insertion operations.
+func ImportManifest(ctx context.Context, manifest migration.NamespaceManifest, lookup FSIDLookup) (*NS, error) {
+	if lookup == nil {
+		return nil, fmt.Errorf("%w: nil lookup", migration.ErrUnknownFilesystem)
+	}
+	groups := make(map[string][]migration.BindManifest)
+	for _, bind := range manifest.Binds {
+		if !fs.ValidPath(bind.DstPath) {
+			return nil, &fs.PathError{Op: "import namespace", Path: bind.DstPath, Err: fs.ErrNotExist}
+		}
+		if !fs.ValidPath(bind.SrcPath) {
+			return nil, &fs.PathError{Op: "import namespace", Path: bind.SrcPath, Err: fs.ErrNotExist}
+		}
+		if _, err := bindModeFromString(bind.Mode); err != nil {
+			return nil, err
+		}
+		if bind.SrcFSID == "" {
+			return nil, fmt.Errorf("import namespace bind %s[%d]: %w", bind.DstPath, bind.Index, migration.ErrUnknownFilesystem)
+		}
+		if bind.Index < 0 {
+			return nil, fmt.Errorf("import namespace bind %s[%d]: negative index", bind.DstPath, bind.Index)
+		}
+		groups[bind.DstPath] = append(groups[bind.DstPath], bind)
+	}
+
+	ns := New(ctx)
+	imported := make(map[string][]bindTarget, len(groups))
+	for dstPath, binds := range groups {
+		sort.Slice(binds, func(i, j int) bool {
+			return binds[i].Index < binds[j].Index
+		})
+		targets := make([]bindTarget, 0, len(binds))
+		for i, bind := range binds {
+			if i > 0 && bind.Index == binds[i-1].Index {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: duplicate index", dstPath, bind.Index)
+			}
+			if bind.Index != i {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: non-contiguous index", dstPath, bind.Index)
+			}
+			mode, err := bindModeFromString(bind.Mode)
+			if err != nil {
+				return nil, err
+			}
+			fsys, err := lookup(bind.SrcFSID)
+			if err != nil {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: %w", dstPath, bind.Index, err)
+			}
+			if fsys == nil {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: %w", dstPath, bind.Index, migration.ErrUnknownFilesystem)
+			}
+			file, err := fsys.Open(bind.SrcPath)
+			if err != nil {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: %w", dstPath, bind.Index, err)
+			}
+			fi, err := file.Stat()
+			if closeErr := file.Close(); err == nil {
+				err = closeErr
+			}
+			if err != nil {
+				return nil, fmt.Errorf("import namespace bind %s[%d]: %w", dstPath, bind.Index, err)
+			}
+			targets = append(targets, bindTarget{
+				fs:   fsys,
+				path: bind.SrcPath,
+				fi:   fi,
+				mode: mode,
+			})
+		}
+		imported[dstPath] = targets
+	}
+	ns.bindings.Store(&imported)
+	return ns, nil
+}
+
+func bindModeFromString(mode string) (BindMode, error) {
+	switch mode {
+	case "after":
+		return ModeAfter, nil
+	case "before":
+		return ModeBefore, nil
+	case "replace":
+		return ModeReplace, nil
+	default:
+		return ModeAfter, fmt.Errorf("import namespace bind mode %q: %w", mode, fs.ErrInvalid)
+	}
 }
 
 // Binds returns all fileinfo for bindings in a directory
