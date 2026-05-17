@@ -1,6 +1,7 @@
 package cowfs
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/memfs"
+	"tractor.dev/wanix/fs/vfs"
+	"tractor.dev/wanix/migration"
 )
 
 // testFS creates a new CopyOnWriteFS with memfs base and overlay for testing
@@ -1309,6 +1312,181 @@ func TestWhiteoutPersistence(t *testing.T) {
 	// dir1/file3.txt should not be accessible
 	if _, err := fsys2.Stat("dir1/file3.txt"); !os.IsNotExist(err) {
 		t.Error("dir1/file3.txt should not be accessible after reload")
+	}
+}
+
+func TestWhiteoutRecreateClearsPersistedTombstone(t *testing.T) {
+	fsys := testFS(t)
+	setupTestFiles(t, fsys.Base)
+
+	const whiteoutDir = ".wh"
+	if err := fsys.Whiteout(whiteoutDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Remove("file1.txt"); err != nil {
+		t.Fatal(err)
+	}
+	deletesDir := path.Join(whiteoutDir, "deletes")
+	entries, err := fs.ReadDir(fsys.Overlay, deletesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d persisted tombstones, want 1", len(entries))
+	}
+
+	f, err := fsys.OpenFile("file1.txt", os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, ok := f.(io.Writer)
+	if !ok {
+		t.Fatal("file does not implement io.Writer")
+	}
+	if _, err := io.WriteString(w, "recreated"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err = fs.ReadDir(fsys.Overlay, deletesDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("got %d persisted tombstones after recreate, want 0", len(entries))
+	}
+
+	restored, err := Restore(fsys.Base, fsys.Overlay, whiteoutDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, restored, "file1.txt", "recreated")
+}
+
+func TestRestoreDescriptorAndNamespaceManifest(t *testing.T) {
+	base := memfs.New()
+	for name, data := range map[string]string{
+		"a.txt": "base-a",
+		"c.txt": "base-c",
+	} {
+		if err := fs.WriteFile(base, name, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	overlay := memfs.New()
+	fsys, err := Restore(base, overlay, ".wh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Remove("a.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.Rename("c.txt", "d.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(fsys, "b.txt", []byte("overlay-b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desc, err := fsys.Descriptor("cow1", "base1", "overlay1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc.Kind != FilesystemKind || desc.BaseFSID != "base1" || desc.OverlayFSID != "overlay1" || desc.WhiteoutDir != ".wh" {
+		t.Fatalf("descriptor = %#v", desc)
+	}
+
+	ns := vfs.New(context.Background())
+	if err := ns.Bind(fsys, ".", "mnt", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := ns.ExportManifest("task1", func(candidate fs.FS) (string, error) {
+		if candidate == fsys {
+			return "cow1", nil
+		}
+		return "", migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := RestoreDescriptor(desc, func(id string) (fs.FS, error) {
+		switch id {
+		case "base1":
+			return base, nil
+		case "overlay1":
+			return overlay, nil
+		default:
+			return nil, migration.ErrUnknownFilesystem
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := vfs.ImportManifest(context.Background(), manifest, func(id string) (fs.FS, error) {
+		if id == "cow1" {
+			return restored, nil
+		}
+		return nil, migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(imported, "mnt/a.txt"); !os.IsNotExist(err) && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("mnt/a.txt should remain deleted after restore, got %v", err)
+	}
+	assertFileContent(t, imported, "mnt/b.txt", "overlay-b")
+	assertFileContent(t, imported, "mnt/d.txt", "base-c")
+	assertFileContent(t, imported, "mnt/c.txt", "base-c")
+}
+
+func TestDescriptorRejectsMissingFilesystemIDs(t *testing.T) {
+	fsys := New(memfs.New(), memfs.New())
+	tests := []struct {
+		name      string
+		id        string
+		baseID    string
+		overlayID string
+	}{
+		{name: "id", baseID: "base", overlayID: "overlay"},
+		{name: "base", id: "cow", overlayID: "overlay"},
+		{name: "overlay", id: "cow", baseID: "base"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := fsys.Descriptor(tt.id, tt.baseID, tt.overlayID)
+			if !errors.Is(err, migration.ErrUnknownFilesystem) {
+				t.Fatalf("Descriptor error = %v, want ErrUnknownFilesystem", err)
+			}
+		})
+	}
+}
+
+func TestRestoreDescriptorRejectsInvalidInput(t *testing.T) {
+	desc := migration.FilesystemDescriptor{
+		ID:          "cow",
+		Kind:        "memfs",
+		BaseFSID:    "base",
+		OverlayFSID: "overlay",
+	}
+	_, err := RestoreDescriptor(desc, func(string) (fs.FS, error) {
+		return nil, nil
+	})
+	if !errors.Is(err, migration.ErrUnsupported) {
+		t.Fatalf("RestoreDescriptor kind error = %v, want ErrUnsupported", err)
+	}
+
+	desc.Kind = FilesystemKind
+	_, err = RestoreDescriptor(desc, nil)
+	if !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("RestoreDescriptor nil lookup error = %v, want ErrUnknownFilesystem", err)
+	}
+
+	_, err = RestoreDescriptor(desc, func(string) (fs.FS, error) {
+		return nil, migration.ErrUnknownFilesystem
+	})
+	if !errors.Is(err, migration.ErrUnknownFilesystem) {
+		t.Fatalf("RestoreDescriptor lookup error = %v, want ErrUnknownFilesystem", err)
 	}
 }
 
