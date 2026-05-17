@@ -7,6 +7,7 @@ import (
 
 	"tractor.dev/wanix"
 	gojsworker "tractor.dev/wanix/gojs/worker"
+	"tractor.dev/wanix/migration"
 	"tractor.dev/wanix/web/worker"
 )
 
@@ -21,4 +22,8 @@ func (d *Driver) Check(t *wanix.Task) bool {
 
 func (d *Driver) Start(t *wanix.Task) error {
 	return worker.StartTaskWorker(d.Workers, t, gojsworker.BlobURL())
+}
+
+func (d *Driver) RestoreTask(t *wanix.Task, _ migration.TaskManifest) error {
+	return d.Start(t)
 }

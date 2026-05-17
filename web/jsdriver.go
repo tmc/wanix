@@ -8,6 +8,7 @@ import (
 
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs"
+	"tractor.dev/wanix/migration"
 	"tractor.dev/wanix/web/worker"
 )
 
@@ -31,4 +32,8 @@ func (d *JSDriver) Start(t *wanix.Task) error {
 	blob := js.Global().Get("Blob").New([]any{jsBuf}, js.ValueOf(map[string]any{"type": "text/javascript"}))
 	url := js.Global().Get("URL").Call("createObjectURL", blob)
 	return worker.StartTaskWorker(d.Workers, t, url.String())
+}
+
+func (d *JSDriver) RestoreTask(t *wanix.Task, _ migration.TaskManifest) error {
+	return d.Start(t)
 }

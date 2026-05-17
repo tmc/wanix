@@ -410,6 +410,98 @@ func TestTaskManifestState(t *testing.T) {
 	}
 }
 
+func TestTaskImportManifestRestoresRunningState(t *testing.T) {
+	backing := memfs.New()
+	if err := fs.WriteFile(backing, "data.txt", []byte("abcdef"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	driver := &recordingTaskRestorer{}
+	taskfs := NewTaskFS()
+	taskfs.Register("restart", driver)
+	manifest := migration.TaskManifest{
+		ID:        "2",
+		Kind:      "restart",
+		State:     migration.TaskStateRunning,
+		Command:   "run data.txt",
+		Directory: "mnt",
+		Env:       []string{"A=B"},
+		Namespace: migration.NamespaceManifest{
+			TaskID: "2",
+			Binds: []migration.BindManifest{{
+				DstPath: ".",
+				SrcFSID: "rootfs",
+				SrcPath: ".",
+				Mode:    "replace",
+				Index:   0,
+				Root:    true,
+			}},
+		},
+		FDs: []migration.FDManifest{{
+			FD:         3,
+			Kind:       "file",
+			Path:       "data.txt",
+			Flags:      os.O_RDONLY,
+			Offset:     3,
+			Restorable: true,
+		}},
+	}
+	restored, err := taskfs.ImportManifest(context.Background(), manifest, nil, func(id string) (fs.FS, error) {
+		if id == "rootfs" {
+			return backing, nil
+		}
+		return nil, migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(driver.manifests) != 1 || driver.manifests[0].State != migration.TaskStateRunning {
+		t.Fatalf("restored manifests = %#v, want running state", driver.manifests)
+	}
+	if got := GetWorker(restored); got != "restored" {
+		t.Fatalf("restored worker = %#v, want restored", got)
+	}
+	if restored.Cmd() != "run data.txt" || restored.Dir() != "mnt" {
+		t.Fatalf("restored task cmd=%q dir=%q", restored.Cmd(), restored.Dir())
+	}
+	fd, _, err := restored.FD(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := make([]byte, 1)
+	if _, err := fd.Read(next); err != nil {
+		t.Fatal(err)
+	}
+	if string(next) != "d" {
+		t.Fatalf("restored fd next byte = %q, want d", next)
+	}
+}
+
+func TestTaskImportManifestRollsBackRunningRestoreFailure(t *testing.T) {
+	driver := &recordingTaskRestorer{err: fs.ErrInvalid}
+	taskfs := NewTaskFS()
+	taskfs.Register("restart", driver)
+	_, err := taskfs.ImportManifest(context.Background(), migration.TaskManifest{
+		ID:    "1",
+		Kind:  "restart",
+		State: migration.TaskStateRunning,
+	}, nil, func(string) (fs.FS, error) {
+		return nil, migration.ErrUnknownFilesystem
+	})
+	if !errors.Is(err, fs.ErrInvalid) {
+		t.Fatalf("ImportManifest running restore error = %v, want ErrInvalid", err)
+	}
+	if _, err := taskfs.Lookup("1"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Lookup after failed running import = %v, want ErrNotExist", err)
+	}
+	next, err := taskfs.Alloc("auto", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID() != "1" {
+		t.Fatalf("next task id = %s, want 1", next.ID())
+	}
+}
+
 func reflectStringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -436,4 +528,26 @@ func (f *nonSeekFile) Close() error {
 
 func (f *nonSeekFile) Stat() (fs.FileInfo, error) {
 	return f.info, nil
+}
+
+type recordingTaskRestorer struct {
+	manifests []migration.TaskManifest
+	err       error
+}
+
+func (d *recordingTaskRestorer) Check(*Task) bool {
+	return false
+}
+
+func (d *recordingTaskRestorer) Start(*Task) error {
+	return nil
+}
+
+func (d *recordingTaskRestorer) RestoreTask(t *Task, manifest migration.TaskManifest) error {
+	d.manifests = append(d.manifests, manifest)
+	if d.err != nil {
+		return d.err
+	}
+	SetWorker(t, "restored")
+	return nil
 }

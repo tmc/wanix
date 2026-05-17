@@ -41,6 +41,12 @@ type TaskDriver interface {
 	Start(*Task) error
 }
 
+// TaskRestorer is implemented by drivers that can restore a running task from
+// its migration manifest after namespace and file descriptors have been rebuilt.
+type TaskRestorer interface {
+	RestoreTask(*Task, migration.TaskManifest) error
+}
+
 type Task struct {
 	driver TaskDriver
 	parent *Task
@@ -485,10 +491,34 @@ func checkTaskManifestState(manifest migration.TaskManifest) error {
 	case "", migration.TaskStateCreated, migration.TaskStateExited:
 		return nil
 	case migration.TaskStateRunning:
-		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrUnsupported)
+		return nil
 	default:
 		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrInvalidManifest)
 	}
+}
+
+func checkTaskManifestDriver(manifest migration.TaskManifest, driver TaskDriver) error {
+	if manifest.State != migration.TaskStateRunning {
+		return nil
+	}
+	if _, ok := driver.(TaskRestorer); !ok {
+		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrUnsupported)
+	}
+	return nil
+}
+
+func restoreTaskRuntime(task *Task, manifest migration.TaskManifest) error {
+	if manifest.State != migration.TaskStateRunning {
+		return nil
+	}
+	restorer, ok := task.driver.(TaskRestorer)
+	if !ok {
+		return fmt.Errorf("restore task %s state %q: %w", manifest.ID, manifest.State, migration.ErrUnsupported)
+	}
+	if err := restorer.RestoreTask(task, manifest); err != nil {
+		return fmt.Errorf("restore task %s runtime: %w", manifest.ID, err)
+	}
+	return nil
 }
 
 func (r *Task) importFDManifests(fds []migration.FDManifest) error {
@@ -726,7 +756,8 @@ func (d *TaskFS) Alloc(kind string, parent *Task) (*Task, error) {
 	return p, nil
 }
 
-// ImportManifest restores a task from a migration manifest without starting it.
+// ImportManifest restores a task from a migration manifest. Running tasks are
+// restarted only when their driver implements TaskRestorer.
 func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskManifest, parent *Task, lookup vfs.FSIDLookup) (*Task, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -758,6 +789,11 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 			return nil, fmt.Errorf("import task alias %q: %w", manifest.Alias, fs.ErrExist)
 		}
 	}
+	if err := checkTaskManifestDriver(manifest, driver); err != nil {
+		d.mu.Unlock()
+		return nil, err
+	}
+	startNextID := d.nextID
 	d.mu.Unlock()
 
 	task := &Task{
@@ -785,13 +821,14 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 	}
 
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if _, exists := d.resources[manifest.ID]; exists {
+		d.mu.Unlock()
 		closeOpenFiles(task.fds)
 		return nil, fmt.Errorf("import task %s: %w", manifest.ID, fs.ErrExist)
 	}
 	if manifest.Alias != "" {
 		if _, exists := d.aliases[manifest.Alias]; exists {
+			d.mu.Unlock()
 			closeOpenFiles(task.fds)
 			return nil, fmt.Errorf("import task alias %q: %w", manifest.Alias, fs.ErrExist)
 		}
@@ -800,6 +837,11 @@ func (d *TaskFS) ImportManifest(ctx context.Context, manifest migration.TaskMani
 	d.resources[manifest.ID] = task
 	if d.nextID < id {
 		d.nextID = id
+	}
+	d.mu.Unlock()
+	if err := restoreTaskRuntime(task, manifest); err != nil {
+		d.rollbackImportedTasks([]*Task{task}, startNextID)
+		return nil, err
 	}
 	return task, nil
 }
@@ -828,6 +870,10 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 			return taskRestore{}, fmt.Errorf("restore task alias %q: %w", manifest.Alias, fs.ErrExist)
 		}
 	}
+	if err := checkTaskManifestDriver(manifest, driver); err != nil {
+		d.mu.Unlock()
+		return taskRestore{}, err
+	}
 	d.mu.Unlock()
 
 	task.mu.Lock()
@@ -841,6 +887,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	oldNS := task.ns
 	oldFDs := task.fds
 	oldFDIdx := task.fdIdx
+	oldWorker := task.worker
 	task.mu.Unlock()
 
 	taskCtx := context.WithValue(ctx, TaskContextKey, task)
@@ -859,7 +906,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 	newFDs := tmp.fds
 	newFDIdx := tmp.fdIdx
 
-	apply := func(driver TaskDriver, alias, kind, cmd, exit string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int) {
+	apply := func(driver TaskDriver, alias, kind, cmd, exit string, env []string, dir string, ns *vfs.NS, fds map[int]*openFile, fdIdx int, worker any) {
 		task.mu.Lock()
 		task.driver = driver
 		task.alias = alias
@@ -871,6 +918,7 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 		task.ns = ns
 		task.fds = fds
 		task.fdIdx = fdIdx
+		task.worker = worker
 		task.mu.Unlock()
 	}
 	setAlias := func(old, new string) {
@@ -886,19 +934,24 @@ func (d *TaskFS) restoreExistingTask(ctx context.Context, task *Task, manifest m
 		d.mu.Unlock()
 	}
 
-	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Exit, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx)
+	apply(driver, manifest.Alias, manifest.Kind, manifest.Command, manifest.Exit, manifest.Env, manifest.Directory, namespace, newFDs, newFDIdx, nil)
 	setAlias(oldAlias, manifest.Alias)
 
-	return taskRestore{
+	restore := taskRestore{
 		rollback: func() {
 			closeOpenFiles(newFDs)
-			apply(oldDriver, oldAlias, oldKind, oldCmd, oldExit, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx)
+			apply(oldDriver, oldAlias, oldKind, oldCmd, oldExit, oldEnv, oldDir, oldNS, oldFDs, oldFDIdx, oldWorker)
 			setAlias(manifest.Alias, oldAlias)
 		},
 		commit: func() {
 			closeOpenFiles(oldFDs)
 		},
-	}, nil
+	}
+	if err := restoreTaskRuntime(task, manifest); err != nil {
+		restore.rollback()
+		return taskRestore{}, err
+	}
+	return restore, nil
 }
 
 func (d *TaskFS) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"tractor.dev/wanix"
+	"tractor.dev/wanix/migration"
 	wasiworker "tractor.dev/wanix/wasi/worker"
 	"tractor.dev/wanix/web/worker"
 )
@@ -21,4 +22,8 @@ func (d *Driver) Check(t *wanix.Task) bool {
 
 func (d *Driver) Start(t *wanix.Task) error {
 	return worker.StartTaskWorker(d.Workers, t, wasiworker.BlobURL())
+}
+
+func (d *Driver) RestoreTask(t *wanix.Task, _ migration.TaskManifest) error {
+	return d.Start(t)
 }

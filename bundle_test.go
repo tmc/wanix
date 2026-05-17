@@ -214,6 +214,29 @@ func TestTaskFSBundleManifestFailsClosed(t *testing.T) {
 	}
 }
 
+func TestTaskFSBundleManifestExportsRestartableRunningTask(t *testing.T) {
+	driver := &recordingTaskRestorer{}
+	taskfs := NewTaskFS()
+	taskfs.Register("restart", driver)
+	task, err := taskfs.Alloc("restart", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetWorker(task, "worker")
+
+	manifest, err := taskfs.BundleManifest(BundleManifestOptions{
+		Resolve: func(fs.FS) (string, error) {
+			return "", migration.ErrUnknownFilesystem
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Tasks) != 1 || manifest.Tasks[0].State != migration.TaskStateRunning {
+		t.Fatalf("manifest tasks = %#v, want one running task", manifest.Tasks)
+	}
+}
+
 func TestRestoreBundleRestoresCowfsTaskAndFD(t *testing.T) {
 	base := memfs.New()
 	if err := fs.WriteFile(base, "a.txt", []byte("deleted"), 0o644); err != nil {

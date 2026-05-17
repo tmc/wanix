@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-running-task-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-running-task-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-running-task-restore" debug>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-running-task-restore" debug>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function newTask(root, kind) {
+            return (await root.readText(["#task", "new", kind].join("/"))).trim();
+        }
+
+        function taskState(manifest, id) {
+            const task = (manifest.tasks || []).find(task => task.id === id);
+            return task ? task.state : "";
+        }
+
+        const progress = {};
+        window.wanixBundleRunningTaskResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+
+            progress.step = "seed";
+            await source.root.bindMemFS("root");
+            await target.root.bindMemFS("root");
+            await source.root.writeFile("root/runner.js", `
+                globalThis.onmessage = event => {
+                    if (!event.data.worker) return;
+                    globalThis.wanixWorker = event.data.worker;
+                };
+            `);
+
+            progress.step = "start";
+            const taskID = await newTask(source.root, "js");
+            await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "root/runner.js");
+            await source.root.writeFile(["#task", taskID, "ctl"].join("/"), "start");
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "root"},
+            ]));
+            const sourceState = taskState(bundle.manifest, taskID);
+
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "verify";
+            const targetManifest = await target.root.bundleManifest(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "root"},
+            ]));
+            const targetState = taskState(targetManifest, taskID);
+            const restoredCmd = await target.root.readText(["#task", taskID, "cmd"].join("/"));
+            const runner = await target.root.readText("root/runner.js");
+            const result = {
+                ok: sourceState === "running" &&
+                    targetState === "running" &&
+                    restoredCmd.trim() === "root/runner.js" &&
+                    runner.includes("wanixWorker") &&
+                    (restore.tasks || []).includes(taskID),
+                taskID,
+                sourceState,
+                targetState,
+                restoredCmd: restoredCmd.trim(),
+                tasks: restore.tasks || [],
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>
