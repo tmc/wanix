@@ -39,6 +39,16 @@ export class WanixHandle {
         await this.peer.call("Bind", [name, newname]);
     }
 
+    async bindCowFS(base, overlay, target, whiteout=".wh") {
+        this.logger(`bindCowFS ${base} ${overlay} ${target} ${whiteout}`);
+        await this.peer.call("BindCowFS", [base, overlay, target, whiteout]);
+    }
+
+    async bindMemFS(target) {
+        this.logger(`bindMemFS ${target}`);
+        await this.peer.call("BindMemFS", [target]);
+    }
+
     async unbind(name, newname) {
         this.logger(`unbind ${name} ${newname}`);
         await this.peer.call("Unbind", [name, newname]);

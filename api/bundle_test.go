@@ -217,6 +217,154 @@ func TestRestoreBundleManifestRPCBoundary(t *testing.T) {
 	}
 }
 
+func TestRestoreBundleManifestRPCRestoresCowFSDescriptor(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	base := memfs.New()
+	overlay := memfs.New()
+	if err := fs.WriteFile(base, "base.txt", []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(overlay, "overlay.txt", []byte("overlay"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(base, ".", "base", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(overlay, ".", "overlay", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	client := newBundleAPIClient(t, root)
+
+	manifest := migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:     "basefs",
+			Kind:   "memfs",
+			Source: "base",
+		}, {
+			ID:     "overlayfs",
+			Kind:   "memfs",
+			Source: "overlay",
+		}, {
+			ID:          "cowfs",
+			Kind:        "cowfs",
+			Source:      "mnt",
+			BaseFSID:    "basefs",
+			OverlayFSID: "overlayfs",
+			WhiteoutDir: ".wh",
+		}},
+		Tasks: []migration.TaskManifest{{
+			ID:   "2",
+			Kind: "auto",
+			Namespace: migration.NamespaceManifest{
+				TaskID: "2",
+				Binds: []migration.BindManifest{{
+					DstPath: "mnt",
+					SrcFSID: "cowfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+				}},
+			},
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Tasks []string `json:"tasks"`
+	}
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := root.Lookup("2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		want string
+	}{
+		{"mnt/base.txt", "base"},
+		{"mnt/overlay.txt", "overlay"},
+	} {
+		data, err := fs.ReadFile(restored.NS(), tt.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != tt.want {
+			t.Fatalf("%s = %q, want %q", tt.name, data, tt.want)
+		}
+	}
+}
+
+func TestBindCowFSRPCBoundary(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	base := memfs.New()
+	overlay := memfs.New()
+	if err := fs.Mkdir(base, "dir", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(base, "dir/base.txt", []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(base, ".", "base", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(overlay, ".", "overlay", vfs.ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	client := newBundleAPIClient(t, root)
+
+	var result any
+	if _, err := client.Call(context.Background(), "BindCowFS", []string{"base", "overlay", "cow", ".wh"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(root.NS(), "cow/dir/base.txt", []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := fs.ReadFile(overlay, "dir/base.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "changed" {
+		t.Fatalf("overlay copy = %q, want changed", data)
+	}
+	if err := fs.Remove(root.NS(), "cow/dir/base.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(root.NS(), "cow/dir/base.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("removed cow path error = %v, want ErrNotExist", err)
+	}
+	if _, err := client.Call(context.Background(), "BindCowFS", []string{"base", "overlay", "restored", ".wh"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(root.NS(), "restored/dir/base.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("restored cow path error = %v, want persisted ErrNotExist", err)
+	}
+}
+
+func TestBindMemFSRPCBoundary(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	client := newBundleAPIClient(t, root)
+
+	var result any
+	if _, err := client.Call(context.Background(), "BindMemFS", []string{"one"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Call(context.Background(), "BindMemFS", []string{"two"}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(root.NS(), "one/file.txt", []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ReadFile(root.NS(), "two/file.txt"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("two/file.txt error = %v, want ErrNotExist", err)
+	}
+}
+
 func TestRestoreBundleManifestRPCRestoresRootInPlace(t *testing.T) {
 	root, _ := newBundleAPIRoot(t)
 	client := newBundleAPIClient(t, root)
@@ -521,6 +669,14 @@ func TestHandleJSBundleManifestWrappers(t *testing.T) {
 		name string
 		re   string
 	}{
+		{
+			name: "bind cowfs",
+			re:   `(?s)async\s+bindCowFS\s*\(\s*base\s*,\s*overlay\s*,\s*target\s*,\s*whiteout\s*=\s*"\.wh"\s*\).*?peer\.call\(\s*"BindCowFS"\s*,\s*\[\s*base\s*,\s*overlay\s*,\s*target\s*,\s*whiteout\s*\]\s*\)`,
+		},
+		{
+			name: "bind memfs",
+			re:   `(?s)async\s+bindMemFS\s*\(\s*target\s*\).*?peer\.call\(\s*"BindMemFS"\s*,\s*\[\s*target\s*\]\s*\)`,
+		},
 		{
 			name: "bundle manifest",
 			re:   `(?s)async\s+bundleManifest\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?peer\.call\(\s*"BundleManifest"\s*,\s*\[\s*JSON\.stringify\(\s*filesystems\s*\)\s*\]\s*\)`,

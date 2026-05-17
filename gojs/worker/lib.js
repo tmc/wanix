@@ -3983,6 +3983,14 @@ var WanixHandle = class {
     this.logger(`unbind ${name} ${newname}`);
     await this.peer.call("Bind", [name, newname]);
   }
+  async bindCowFS(base, overlay, target2, whiteout = ".wh") {
+    this.logger(`bindCowFS ${base} ${overlay} ${target2} ${whiteout}`);
+    await this.peer.call("BindCowFS", [base, overlay, target2, whiteout]);
+  }
+  async bindMemFS(target2) {
+    this.logger(`bindMemFS ${target2}`);
+    await this.peer.call("BindMemFS", [target2]);
+  }
   async unbind(name, newname) {
     this.logger(`unbind ${name} ${newname}`);
     await this.peer.call("Unbind", [name, newname]);

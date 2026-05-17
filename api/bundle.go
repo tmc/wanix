@@ -9,6 +9,7 @@ import (
 	"tractor.dev/toolkit-go/duplex/rpc"
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs"
+	"tractor.dev/wanix/fs/cowfs"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
 	"tractor.dev/wanix/vm"
@@ -137,7 +138,7 @@ func bundleFilesystemResolver(ctx context.Context, ns *vfs.NS, descs []migration
 }
 
 func bundleFilesystemLookup(ctx context.Context, ns *vfs.NS, descs []migration.FilesystemDescriptor) (vfs.FSIDLookup, error) {
-	refs, err := bundleFilesystemRefs(ctx, ns, descs)
+	refs, err := bundleExternalFilesystemRefs(ctx, ns, descs)
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +150,17 @@ func bundleFilesystemLookup(ctx context.Context, ns *vfs.NS, descs []migration.F
 		}
 		return nil, migration.ErrUnknownFilesystem
 	}, nil
+}
+
+func bundleExternalFilesystemRefs(ctx context.Context, ns *vfs.NS, descs []migration.FilesystemDescriptor) ([]bundleFilesystemRef, error) {
+	external := descs[:0:0]
+	for _, desc := range descs {
+		if desc.Kind == cowfs.FilesystemKind {
+			continue
+		}
+		external = append(external, desc)
+	}
+	return bundleFilesystemRefs(ctx, ns, external)
 }
 
 func bundleFilesystemRefs(ctx context.Context, ns *vfs.NS, descs []migration.FilesystemDescriptor) ([]bundleFilesystemRef, error) {

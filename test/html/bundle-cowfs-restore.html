@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-cowfs-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-cowfs-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-cowfs-restore" debug>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-cowfs-restore" debug>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        const progress = {};
+        window.wanixBundleCowFSResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+
+            progress.step = "memfs";
+            await source.root.bindMemFS("base");
+            await source.root.bindMemFS("overlay");
+            await target.root.bindMemFS("base");
+            await target.root.bindMemFS("overlay");
+
+            progress.step = "seed";
+            await source.root.writeFile("base/keep.txt", "base-keep\n");
+            await source.root.writeFile("base/remove.txt", "base-remove\n");
+            await source.root.makeDirAll("base/sub");
+            await source.root.writeFile("base/sub/copy.txt", "base-copy\n");
+            await source.root.writeFile("overlay/overlay.txt", "overlay-only\n");
+            progress.step = "bind-cowfs";
+            await source.root.bindCowFS("base", "overlay", "mnt", ".wh");
+            await source.root.writeFile("mnt/sub/copy.txt", "overlay-copy\n");
+            await source.root.writeFile("mnt/new.txt", "new-through-cow\n");
+            await source.root.remove("mnt/remove.txt");
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "basefs", source: "base"},
+                {id: "overlayfs", source: "overlay"},
+                {
+                    id: "cowfs",
+                    kind: "cowfs",
+                    source: "mnt",
+                    base_fs_id: "basefs",
+                    overlay_fs_id: "overlayfs",
+                    whiteout_dir: ".wh",
+                    archive: false,
+                },
+            ]));
+            progress.archiveIDs = bundle.archives.map(archive => archive.id);
+            progress.archiveSources = bundle.archives.map(archive => archive.source);
+            progress.filesystemIDs = bundle.manifest.filesystems.map(desc => desc.id);
+            progress.targetBindsBeforeImport = await target.root.readText("#task/1/binds");
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "verify";
+            let removed = false;
+            try {
+                await target.root.readText("mnt/remove.txt");
+            } catch {
+                removed = true;
+            }
+            const result = {
+                ok: removed &&
+                    await target.root.readText("mnt/keep.txt") === "base-keep\n" &&
+                    await target.root.readText("mnt/sub/copy.txt") === "overlay-copy\n" &&
+                    await target.root.readText("mnt/new.txt") === "new-through-cow\n" &&
+                    await target.root.readText("mnt/overlay.txt") === "overlay-only\n",
+                removed,
+                archives: bundle.archives.length,
+                archiveIDs: bundle.archives.map(archive => archive.id),
+                tasks: restore.tasks || [],
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>

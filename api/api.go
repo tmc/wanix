@@ -30,6 +30,8 @@ func Responder(sess mux.Session, task *wanix.Task) {
 	peer.Handle("Mkdir", rpc.HandlerFunc(syscaller.mkdir))
 	peer.Handle("MkdirAll", rpc.HandlerFunc(syscaller.mkdirAll))
 	peer.Handle("Bind", rpc.HandlerFunc(syscaller.bind))
+	peer.Handle("BindCowFS", rpc.HandlerFunc(syscaller.bindCowFS))
+	peer.Handle("BindMemFS", rpc.HandlerFunc(syscaller.bindMemFS))
 	peer.Handle("Unbind", rpc.HandlerFunc(syscaller.unbind))
 	peer.Handle("Stat", rpc.HandlerFunc(syscaller.stat))
 	peer.Handle("Truncate", rpc.HandlerFunc(syscaller.truncate))
