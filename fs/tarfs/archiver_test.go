@@ -92,3 +92,81 @@ func TestArchiveUsesFilesystemReadlink(t *testing.T) {
 	}
 	t.Fatal("archive did not include link.txt")
 }
+
+func TestArchiveUsesReadSizeForDynamicFiles(t *testing.T) {
+	fsys := memfs.From(fskit.MapFS{
+		"dynamic.txt": fskit.RawNode(int64(1), []byte("dynamic")),
+	})
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := Archive(fsys, tw); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name != "dynamic.txt" {
+			continue
+		}
+		if hdr.Size != int64(len("dynamic")) {
+			t.Fatalf("dynamic size = %d, want %d", hdr.Size, len("dynamic"))
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "dynamic" {
+			t.Fatalf("dynamic data = %q, want dynamic", data)
+		}
+		return
+	}
+	t.Fatal("archive did not include dynamic.txt")
+}
+
+func TestArchiveZerosNonRegularHeaderSize(t *testing.T) {
+	fsys := memfs.From(fskit.MapFS{
+		"fifo": fskit.RawNode(int64(12), fs.ModeNamedPipe|0o644),
+	})
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := Archive(fsys, tw); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Name != "fifo" {
+			continue
+		}
+		if hdr.Typeflag != tar.TypeFifo {
+			t.Fatalf("fifo type = %v, want fifo", hdr.Typeflag)
+		}
+		if hdr.Size != 0 {
+			t.Fatalf("fifo size = %d, want 0", hdr.Size)
+		}
+		return
+	}
+	t.Fatal("archive did not include fifo")
+}

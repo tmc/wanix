@@ -32,40 +32,52 @@ func ArchivePath(fsys iofs.FS, root string, tw *tar.Writer) error {
 			return err
 		}
 
-		var link string
-		if info.Mode()&iofs.ModeSymlink != 0 {
-			link, err = fs.Readlink(sub, path)
-			if err != nil {
-				return err
-			}
-		}
+		return archiveEntry(sub, path, info, tw)
+	})
+}
 
-		header, err := tar.FileInfoHeader(info, link)
+func archiveEntry(fsys iofs.FS, path string, info iofs.FileInfo, tw *tar.Writer) error {
+	var link string
+	if info.Mode()&iofs.ModeSymlink != 0 {
+		target, err := fs.Readlink(fsys, path)
 		if err != nil {
 			return err
 		}
-		header.Name = path
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
-			header.Size = 0
-		}
+		link = target
+	}
 
-		if err := tw.WriteHeader(header); err != nil {
-			return err
-		}
-
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-
-		f, err := sub.Open(path)
+	var data []byte
+	if info.Mode().IsRegular() {
+		f, err := fsys.Open(path)
 		if err != nil {
 			return err
 		}
-
-		_, err = io.Copy(tw, f)
+		data, err = io.ReadAll(f)
 		if closeErr := f.Close(); err == nil {
 			err = closeErr
 		}
+		if err != nil {
+			return err
+		}
+	}
+
+	header, err := tar.FileInfoHeader(info, link)
+	if err != nil {
 		return err
-	})
+	}
+	header.Name = path
+	if header.Typeflag == tar.TypeReg || header.Typeflag == tar.TypeRegA {
+		header.Size = int64(len(data))
+	} else {
+		header.Size = 0
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	_, err = tw.Write(data)
+	return err
 }
