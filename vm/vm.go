@@ -58,13 +58,15 @@ func (r *VM) SetState(state []byte) {
 
 func (r *VM) SetGuest(exported fs.FS) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.vfs == nil {
-		panic("vfs not initialized before setting guest")
+	if err := r.initVFSLocked(); err != nil {
+		r.mu.Unlock()
+		return err
 	}
 	r.guest = exported
+	ns := r.vfs
+	r.mu.Unlock()
 	go func() {
-		if err := r.vfs.Bind(r.guest, ".", "guest"); err != nil {
+		if err := ns.Bind(exported, ".", "guest"); err != nil {
 			log.Println("error binding guest", err)
 		}
 	}()
@@ -75,8 +77,8 @@ func (r *VM) Open(name string) (fs.File, error) {
 	return r.OpenContext(context.Background(), name)
 }
 
-func (r *VM) OpenContext(ctx context.Context, name string) (fs.File, error) {
-	base := fskit.MapFS{
+func (r *VM) baseFS() fs.FS {
+	return fskit.MapFS{
 		"ctl": misc.ControlFile(&cli.Command{
 			Usage: "ctl",
 			Short: "control the resource",
@@ -122,14 +124,27 @@ func (r *VM) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			return nil
 		}),
 	}
+}
 
-	r.mu.Lock()
-	if r.vfs == nil {
-		r.vfs = vfs.New(context.Background())
-		if err := r.vfs.Bind(base, ".", "."); err != nil {
-			return nil, err
-		}
+func (r *VM) initVFSLocked() error {
+	if r.vfs != nil {
+		return nil
 	}
+	r.vfs = vfs.New(context.Background())
+	if err := r.vfs.Bind(r.baseFS(), ".", "."); err != nil {
+		r.vfs = nil
+		return err
+	}
+	return nil
+}
+
+func (r *VM) OpenContext(ctx context.Context, name string) (fs.File, error) {
+	r.mu.Lock()
+	if err := r.initVFSLocked(); err != nil {
+		r.mu.Unlock()
+		return nil, err
+	}
+	ns := r.vfs
 	r.mu.Unlock()
 
 	// if r.serial != nil {
@@ -138,5 +153,5 @@ func (r *VM) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	// if r.shmpipe != nil {
 	// 	fsys["shmpipe0"] = fskit.FileFS(shmpipeFile, "shmpipe0")
 	// }
-	return fs.OpenContext(ctx, r.vfs, name)
+	return fs.OpenContext(ctx, ns, name)
 }

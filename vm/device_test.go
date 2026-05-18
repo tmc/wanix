@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"tractor.dev/wanix"
 	"tractor.dev/wanix/fs"
@@ -68,6 +69,36 @@ func TestDeviceImportManifestWithState(t *testing.T) {
 	}
 	if _, err := device.ImportManifestWithState(migration.VMManifest{ID: "3", Kind: "v86", StatePath: "vm/3.state"}, nil); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("missing state error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestImportedVMSetGuestInitializesNamespace(t *testing.T) {
+	root, device := newTestDevice(t)
+	vm, err := device.ImportManifest(migration.VMManifest{ID: "1", Kind: "v86"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := memfs.New()
+	if err := fs.WriteFile(guest, "ready.txt", []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetGuest(guest); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	var data []byte
+	for time.Now().Before(deadline) {
+		data, err = fs.ReadFile(root.NS(), "#vm/1/guest/ready.txt")
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("read imported vm guest: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("guest data = %q, want ok", data)
 	}
 }
 
