@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-v86-state-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-v86-state-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-v86-state-restore" debug>
+        <wanix-bind dst="." src="../../extras/dist/alpine-linux.tgz" type="archive"></wanix-bind>
+        <wanix-bind dst="vm" src="#vm"></wanix-bind>
+        <wanix-bind dst="#vm/v86" src="../../v86/v86.tgz" type="archive"></wanix-bind>
+        <wanix-vm id="guest" export="ttyS0" start></wanix-vm>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-v86-state-restore-target" debug>
+        <wanix-bind dst="." src="../../extras/dist/alpine-linux.tgz" type="archive"></wanix-bind>
+        <wanix-bind dst=".wanix-migration/vm-1-guest" src="#ramfs"></wanix-bind>
+        <wanix-bind dst="vm" src="#vm"></wanix-bind>
+        <wanix-bind dst="#vm/v86" src="../../v86/v86.tgz" type="archive"></wanix-bind>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function withTimeout(label, timeoutMs, fn) {
+            let timer;
+            try {
+                return await Promise.race([
+                    fn(),
+                    new Promise((_, reject) => {
+                        timer = setTimeout(() => reject(new Error(label + " timeout")), timeoutMs);
+                    }),
+                ]);
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
+        async function waitForText(root, path, timeoutMs, progress, step) {
+            const deadline = Date.now() + timeoutMs;
+            let last;
+            while (Date.now() < deadline) {
+                progress.step = step;
+                progress.path = path;
+                try {
+                    progress.stat = await withTimeout("stat " + path, 3000, () => root.stat(path));
+                    return await withTimeout("read " + path, 3000, () => root.readText(path));
+                } catch (error) {
+                    last = error;
+                    progress.lastError = String(error && error.message || error);
+                    try {
+                        progress.guestRoot = (await withTimeout("readdir #vm/1/guest", 3000, () => root.readDir("#vm/1/guest"))).map(entry => entry.Name || entry.name || String(entry));
+                    } catch (dirError) {
+                        progress.guestRootError = String(dirError && dirError.message || dirError);
+                    }
+                    try {
+                        progress.vmRoot = (await withTimeout("readdir #vm", 3000, () => root.readDir("#vm"))).map(entry => entry.Name || entry.name || String(entry));
+                    } catch (dirError) {
+                        progress.vmRootError = String(dirError && dirError.message || dirError);
+                    }
+                    try {
+                        progress.vmOne = (await withTimeout("readdir #vm/1", 3000, () => root.readDir("#vm/1"))).map(entry => entry.Name || entry.name || String(entry));
+                    } catch (dirError) {
+                        progress.vmOneError = String(dirError && dirError.message || dirError);
+                    }
+                    try {
+                        progress.taskTwoEnv = await withTimeout("read #task/2/env", 3000, () => root.readText("#task/2/env"));
+                        progress.taskTwoState = await withTimeout("read #task/2/state", 3000, () => root.readText("#task/2/state"));
+                    } catch (taskError) {
+                        progress.taskTwoError = String(taskError && taskError.message || taskError);
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            throw last || new Error("timeout");
+        }
+
+        async function waitForPath(root, path, timeoutMs, progress, step) {
+            const deadline = Date.now() + timeoutMs;
+            let last;
+            while (Date.now() < deadline) {
+                progress.step = step;
+                progress.path = path;
+                try {
+                    progress.stat = await withTimeout("stat " + path, 3000, () => root.stat(path));
+                    return true;
+                } catch (error) {
+                    last = error;
+                    progress.lastError = String(error && error.message || error);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            throw last || new Error("timeout");
+        }
+
+        const progress = {};
+        window.wanixBundleV86Progress = progress;
+        function step(name) {
+            progress.step = name;
+            console.log("bundle-v86-step", name);
+        }
+
+        window.wanixBundleV86StateResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            step("ready");
+            await Promise.all([ready(source), ready(target)]);
+
+            step("source-guest");
+            await source.root.waitFor("#vm/1/guest/tmp", 90000);
+            const sourceProof = await withTimeout("stat guest tmp", 10000, () => source.root.stat("#vm/1/guest/tmp"));
+
+            const filesystems = window.WanixBundleFilesystems([
+                {id: "rootfs", kind: "memfs", source: ".", archive: false},
+                {id: "v86fs", kind: "memfs", source: "#vm/v86", archive: false},
+                {
+                    id: "guestfs",
+                    kind: "memfs",
+                    source: "#vm/1/guest",
+                    archive: "#vm/1/guest/tmp",
+                    archive_target: ".wanix-migration/vm-1-guest/tmp",
+                    filesystem_source: ".wanix-migration/vm-1-guest",
+                },
+            ]);
+
+            step("bundle-manifest");
+            const manifest = await withTimeout("bundle manifest", 10000, () => source.root.bundleManifest(filesystems));
+
+            step("bundle-vm-states");
+            const vmStates = await withTimeout("bundle vm states", 30000, () => source.root.bundleVMStates());
+            if (vmStates.length) {
+                manifest.vms = vmStates.map(({data, ...vm}) => vm);
+                for (const vm of manifest.vms) {
+                    if (vm.id === "1") {
+                        vm.guest_fs_id = "guestfs";
+                    }
+                }
+            }
+
+            step("archive-guest-tmp");
+            const guestArchive = await withTimeout("archive guest tmp", 30000, () => source.root.archive("#vm/1/guest/tmp"));
+            const bundle = {
+                manifest,
+                archives: [{
+                    id: "guestfs",
+                    source: "#vm/1/guest/tmp",
+                    target: ".wanix-migration/vm-1-guest/tmp",
+                    filesystem_source: ".wanix-migration/vm-1-guest",
+                    data: guestArchive,
+                }],
+                states: vmStates
+                    .filter(state => state.state_path && state.data)
+                    .map(state => ({id: state.id, path: state.state_path, data: state.data})),
+            };
+            const vmState = (bundle.states || []).find(state => state.id === "1");
+            const vmManifest = (bundle.manifest.vms || []).find(vm => vm.id === "1");
+            const taskTwo = (bundle.manifest.tasks || []).find(task => task.id === "2");
+            progress.bundle = {
+                states: (bundle.states || []).map(state => ({id: state.id, bytes: state.data && state.data.byteLength})),
+                vms: bundle.manifest.vms || [],
+                taskTwo,
+                archives: bundle.archives.map(archive => ({id: archive.id, source: archive.source, target: archive.target, bytes: archive.data && archive.data.byteLength})),
+            };
+
+            step("import");
+            const restore = await target.root.importBundle(bundle);
+            progress.restore = restore;
+
+            step("target-guest");
+            const targetProof = await waitForPath(target.root, "#vm/1/guest/tmp", 90000, progress, "target-guest");
+            const vmID = await target.root.readText("#vm/1/id");
+            const taskID = await target.root.readText("#task/2/id");
+
+            const result = {
+                ok: !!sourceProof &&
+                    targetProof === true &&
+                    !!vmState &&
+                    vmState.data &&
+                    vmState.data.byteLength > 0 &&
+                    vmManifest &&
+                    vmManifest.guest_fs_id === "guestfs" &&
+                    vmID === "1\n" &&
+                    taskID === "2\n",
+                sourceProof,
+                targetProof,
+                guestFSID: vmManifest && vmManifest.guest_fs_id,
+                vmStateBytes: vmState && vmState.data && vmState.data.byteLength,
+                archives: bundle.archives.length,
+                tasks: restore.tasks || [],
+                vms: restore.vms || [],
+                vmID,
+                taskID,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>

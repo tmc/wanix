@@ -708,11 +708,11 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 	}{
 		{
 			name: "export bundle",
-			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?this\.bundleVMStates\(\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?states\s*=.*?return\s+\{\s*manifest\s*,\s*archives\s*,\s*states\s*\}`,
+			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?this\.bundleVMStates\(\s*\).*?attachBundleVMGuests\(\s*manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?bundleArchiveFilesystemSource\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?filesystem_source.*?states\s*=.*?return\s+\{\s*manifest\s*,\s*archives\s*,\s*states\s*\}`,
 		},
 		{
 			name: "import bundle",
-			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?desc\.source\s*=\s*target.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?filesystemSource\s*=.*?archive\.filesystem_source.*?desc\.source\s*=\s*filesystemSource.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
 		},
 		{
 			name: "archive data",
@@ -774,17 +774,18 @@ h.restoreBundleManifest = async manifest => {
 		"restoreBundleManifest",
 		manifest.version,
 		manifest.filesystems.map(desc => [desc.id, desc.source]),
-		(manifest.vms || []).map(vm => [vm.id, vm.state_path]),
+		(manifest.vms || []).map(vm => [vm.id, vm.state_path, vm.guest_fs_id || ""]),
 	]);
 	return {tasks: []};
 };
 
 const filesystems = [
 	{id: "rootfs", kind: "memfs", source: "mnt", archive: true},
+	{id: "guestfs", kind: "memfs", source: "#vm/1/guest", archive: "#vm/1/guest/etc", archive_target: ".wanix-migration/vm-1-guest/etc", filesystem_source: ".wanix-migration/vm-1-guest"},
 	{id: "taskfs", kind: "taskfs", source: "#task"},
 ];
 const bundle = await h.exportBundle(filesystems);
-if (bundle.archives.length !== 1 || bundle.archives[0].id !== "rootfs") {
+if (bundle.archives.length !== 2 || bundle.archives[0].id !== "rootfs" || bundle.archives[1].id !== "guestfs") {
 	throw new Error("unexpected archives " + JSON.stringify(bundle.archives));
 }
 if (bundle.states.length !== 1 || bundle.states[0].id !== "1") {
@@ -792,7 +793,10 @@ if (bundle.states.length !== 1 || bundle.states[0].id !== "1") {
 }
 await h.importBundle({
 	manifest: bundle.manifest,
-	archives: [{id: "rootfs", source: "mnt", data: new ArrayBuffer(2)}],
+	archives: [
+		{id: "rootfs", source: "mnt", data: new ArrayBuffer(2)},
+		{id: "guestfs", source: "#vm/1/guest/etc", target: ".wanix-migration/vm-1-guest/etc", filesystem_source: ".wanix-migration/vm-1-guest", data: new ArrayBuffer(2)},
+	],
 	states: bundle.states,
 });
 await h.importBundle({
@@ -809,9 +813,11 @@ const want = JSON.stringify([
 	["bundleManifest", filesystems],
 	["bundleVMStates"],
 	["archive", "mnt"],
+	["archive", "#vm/1/guest/etc"],
 	["importArchive", "mnt", [0, 0]],
+	["importArchive", ".wanix-migration/vm-1-guest/etc", [0, 0]],
 	["writeFile", ".wanix-vmstate-1.bin", [4, 5]],
-	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["taskfs", "#task"]], [["1", ".wanix-vmstate-1.bin"]]],
+	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["guestfs", ".wanix-migration/vm-1-guest"], ["taskfs", "#task"]], [["1", ".wanix-vmstate-1.bin", "guestfs"]]],
 	["remove", ".wanix-vmstate-1.bin"],
 	["importArchive", "exports/2", [7]],
 	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]], []],

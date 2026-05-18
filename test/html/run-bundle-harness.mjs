@@ -11,14 +11,16 @@ const repoRoot = new URL("../..", import.meta.url);
 const baseURL = process.env.WANIX_BASE_URL || "http://127.0.0.1:7071";
 const browserPath = process.env.WANIX_BROWSER || defaultBrowserPath();
 const timeoutMs = Number(process.env.WANIX_HARNESS_TIMEOUT || 120000);
-const pages = [
+const defaultPages = [
 	"test/html/bundle-restore.html",
 	"test/html/bundle-bindgraph-restore.html",
 	"test/html/bundle-cowfs-restore.html",
 	"test/html/bundle-running-task-restore.html",
 	"test/html/bundle-service-worker-restore.html",
 	"test/html/bundle-composite-restore.html",
+	"test/html/bundle-v86-state-restore.html",
 ];
+const pages = process.argv.length > 2 ? process.argv.slice(2) : defaultPages;
 
 let server;
 let browser;
@@ -91,29 +93,50 @@ async function runHarness(port, page) {
 
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		const value = await cdp.evaluate('document.body && document.body.dataset && document.body.dataset.result || ""');
+		const value = await evaluateOr(cdp, 'document.body && document.body.dataset && document.body.dataset.result || ""', 3000, "");
 		if (value) {
+			const result = JSON.parse(value);
+			if (!result.ok) {
+				result.events = recentEvents(cdp);
+			}
 			cdp.close();
 			return {
 				page,
-				result: JSON.parse(value),
+				result,
 			};
 		}
 		await sleep(500);
 	}
 
-	const events = cdp.events
-		.filter(event => event.method === "Runtime.consoleAPICalled" || event.method === "Runtime.exceptionThrown" || event.method === "Log.entryAdded")
-		.slice(-25);
+	const events = recentEvents(cdp);
+	const progress = await evaluateOr(cdp, "window.wanixBundleV86Progress || window.wanixBundleProgress || null", 3000, null);
 	cdp.close();
 	return {
 		page,
 		result: {
 			ok: false,
 			error: "timeout",
+			progress,
 			events,
 		},
 	};
+}
+
+async function evaluateOr(cdp, expression, timeoutMs, fallback) {
+	try {
+		return await Promise.race([
+			cdp.evaluate(expression),
+			sleep(timeoutMs).then(() => fallback),
+		]);
+	} catch {
+		return fallback;
+	}
+}
+
+function recentEvents(cdp) {
+	return cdp.events
+		.filter(event => event.method === "Runtime.consoleAPICalled" || event.method === "Runtime.exceptionThrown" || event.method === "Log.entryAdded")
+		.slice(-25);
 }
 
 class CDP {
@@ -241,7 +264,7 @@ async function main() {
 			server.kill("SIGTERM");
 		}
 		if (profile) {
-			await rm(profile, {recursive: true, force: true});
+			await rm(profile, {recursive: true, force: true, maxRetries: 5, retryDelay: 200});
 		}
 	}
 }

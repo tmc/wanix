@@ -4063,6 +4063,7 @@ var WanixHandle = class {
     const vmStates = await this.bundleVMStates();
     if (vmStates.length) {
       manifest.vms = vmStates.map(({ data, ...vm }) => vm);
+      attachBundleVMGuests(manifest);
     }
     const requests = new Map(filesystems.map((desc) => [desc.id, desc]));
     const archives = [];
@@ -4076,6 +4077,7 @@ var WanixHandle = class {
         continue;
       }
       const target2 = bundleArchiveTarget(desc, request);
+      const filesystemSource = bundleArchiveFilesystemSource(desc, request);
       const archive = {
         id: desc.id,
         source,
@@ -4083,6 +4085,9 @@ var WanixHandle = class {
       };
       if (target2 && target2 !== source) {
         archive.target = target2;
+      }
+      if (filesystemSource && filesystemSource !== target2) {
+        archive.filesystem_source = filesystemSource;
       }
       archives.push(archive);
     }
@@ -4110,8 +4115,9 @@ var WanixHandle = class {
       if (!target2) {
         throw new Error(`importBundle: filesystem ${archive.id} missing target`);
       }
-      if (desc.source !== target2) {
-        desc.source = target2;
+      const filesystemSource = archive.filesystem_source || target2;
+      if (desc.source !== filesystemSource) {
+        desc.source = filesystemSource;
       }
       await this.importArchive(target2, bundleArchiveData(archive.data));
     }
@@ -4289,6 +4295,12 @@ function bundleArchiveTarget(desc, request) {
   }
   return request.archive_target || request.target || request.restore_source || "";
 }
+function bundleArchiveFilesystemSource(desc, request) {
+  if (!request) {
+    return "";
+  }
+  return request.filesystem_source || "";
+}
 function bundleArchiveData(data) {
   if (data instanceof Uint8Array || typeof data === "string") {
     return data;
@@ -4323,6 +4335,15 @@ function normalizeBundleManifest(manifest) {
     out.created_at = new Date(out.created_at * 1e3).toISOString();
   }
   return out;
+}
+function attachBundleVMGuests(manifest) {
+  const filesystems = manifest.filesystems || [];
+  for (const vm of manifest.vms || []) {
+    const guest = filesystems.find((desc) => desc.source === `#vm/${vm.id}/guest`);
+    if (guest) {
+      vm.guest_fs_id = guest.id;
+    }
+  }
 }
 if (!ReadableStream.prototype[Symbol.asyncIterator]) {
   ReadableStream.prototype[Symbol.asyncIterator] = async function* () {
