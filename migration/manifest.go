@@ -174,6 +174,9 @@ func validateTasks(tasks []TaskManifest) error {
 		default:
 			return fmt.Errorf("bundle manifest task %q state %q: %w", task.ID, task.State, ErrInvalidManifest)
 		}
+		if task.StatePath != "" && !iofs.ValidPath(task.StatePath) {
+			return fmt.Errorf("bundle manifest task %q state path %q: %w", task.ID, task.StatePath, ErrInvalidManifest)
+		}
 		if err := validateNamespace(task.ID, task.Namespace); err != nil {
 			return err
 		}
@@ -289,6 +292,7 @@ type TaskManifest struct {
 	ID         string            `json:"id"`
 	Kind       string            `json:"kind,omitempty"`
 	State      TaskState         `json:"state,omitempty"`
+	StatePath  string            `json:"state_path,omitempty"`
 	Alias      string            `json:"alias,omitempty"`
 	Command    string            `json:"command,omitempty"`
 	Exit       string            `json:"exit,omitempty"`

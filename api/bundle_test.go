@@ -174,6 +174,19 @@ func TestBundleManifestRPCBoundary(t *testing.T) {
 	}
 }
 
+func TestBundleTaskStatesRPCBoundary(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	client := newBundleAPIClient(t, root)
+
+	var states []bundleTaskState
+	if _, err := client.Call(context.Background(), "BundleTaskStates", []any{}, &states); err != nil {
+		t.Fatal(err)
+	}
+	if len(states) != 0 {
+		t.Fatalf("task states = %#v, want none on native test runtime", states)
+	}
+}
+
 func TestRestoreBundleManifestRPCBoundary(t *testing.T) {
 	root, _ := newBundleAPIRoot(t)
 	client := newBundleAPIClient(t, root)
@@ -686,6 +699,10 @@ func TestHandleJSBundleManifestWrappers(t *testing.T) {
 			re:   `(?s)async\s+bundleVMStates\s*\(\s*\).*?peer\.call\(\s*"BundleVMStates"\s*,\s*\[\s*\]\s*\)`,
 		},
 		{
+			name: "bundle task states",
+			re:   `(?s)async\s+bundleTaskStates\s*\(\s*\).*?peer\.call\(\s*"BundleTaskStates"\s*,\s*\[\s*\]\s*\)`,
+		},
+		{
 			name: "restore bundle manifest",
 			re:   `(?s)async\s+restoreBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+manifest\s*!==\s*"string".*?manifest\s*=\s*JSON\.stringify\(\s*normalizeBundleManifest\(\s*manifest\s*\)\s*\).*?peer\.call\(\s*"RestoreBundleManifest"\s*,\s*\[\s*manifest\s*\]\s*\)`,
 		},
@@ -708,11 +725,11 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 	}{
 		{
 			name: "export bundle",
-			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?this\.bundleVMStates\(\s*\).*?attachBundleVMGuests\(\s*manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?bundleArchiveFilesystemSource\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?filesystem_source.*?states\s*=.*?return\s+\{\s*manifest\s*,\s*archives\s*,\s*states\s*\}`,
+			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?this\.bundleVMStates\(\s*\).*?this\.bundleTaskStates\(\s*\).*?attachBundleVMGuests\(\s*manifest\s*\).*?task\.state_path\s*=\s*state\.state_path.*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?bundleArchiveFilesystemSource\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?filesystem_source.*?kind:\s*"task".*?return\s+\{\s*manifest\s*,\s*archives\s*,\s*states\s*\}`,
 		},
 		{
 			name: "import bundle",
-			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?filesystemSource\s*=.*?archive\.filesystem_source.*?desc\.source\s*=\s*filesystemSource.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?filesystemSource\s*=.*?archive\.filesystem_source.*?desc\.source\s*=\s*filesystemSource.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?kind\s*===\s*"task".*?task\.state_path\s*=\s*target.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
 		},
 		{
 			name: "archive data",
@@ -749,11 +766,16 @@ h.bundleManifest = async filesystems => {
 		version: "wanix-migration-v1",
 		mode: "migrate",
 		filesystems: filesystems.map(({archive, ...desc}) => desc),
+		tasks: [{id: "2", kind: "js", state: "running"}],
 	};
 };
 h.bundleVMStates = async () => {
 	calls.push(["bundleVMStates"]);
 	return [{id: "1", kind: "v86", state_path: ".wanix-vmstate-1.bin", data: new Uint8Array([4, 5])}];
+};
+h.bundleTaskStates = async () => {
+	calls.push(["bundleTaskStates"]);
+	return [{id: "2", state_path: ".wanix-taskstate-2.bin", data: new Uint8Array([6, 7])}];
 };
 h.archive = async name => {
 	calls.push(["archive", name]);
@@ -775,6 +797,7 @@ h.restoreBundleManifest = async manifest => {
 		manifest.version,
 		manifest.filesystems.map(desc => [desc.id, desc.source]),
 		(manifest.vms || []).map(vm => [vm.id, vm.state_path, vm.guest_fs_id || ""]),
+		(manifest.tasks || []).map(task => [task.id, task.state_path || ""]),
 	]);
 	return {tasks: []};
 };
@@ -788,7 +811,7 @@ const bundle = await h.exportBundle(filesystems);
 if (bundle.archives.length !== 2 || bundle.archives[0].id !== "rootfs" || bundle.archives[1].id !== "guestfs") {
 	throw new Error("unexpected archives " + JSON.stringify(bundle.archives));
 }
-if (bundle.states.length !== 1 || bundle.states[0].id !== "1") {
+if (bundle.states.length !== 2 || bundle.states[0].id !== "1" || bundle.states[1].id !== "2") {
 	throw new Error("unexpected states " + JSON.stringify(bundle.states));
 }
 await h.importBundle({
@@ -812,15 +835,18 @@ const got = JSON.stringify(calls);
 const want = JSON.stringify([
 	["bundleManifest", filesystems],
 	["bundleVMStates"],
+	["bundleTaskStates"],
 	["archive", "mnt"],
 	["archive", "#vm/1/guest/etc"],
 	["importArchive", "mnt", [0, 0]],
 	["importArchive", ".wanix-migration/vm-1-guest/etc", [0, 0]],
 	["writeFile", ".wanix-vmstate-1.bin", [4, 5]],
-	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["guestfs", ".wanix-migration/vm-1-guest"], ["taskfs", "#task"]], [["1", ".wanix-vmstate-1.bin", "guestfs"]]],
+	["writeFile", ".wanix-taskstate-2.bin", [6, 7]],
+	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["guestfs", ".wanix-migration/vm-1-guest"], ["taskfs", "#task"]], [["1", ".wanix-vmstate-1.bin", "guestfs"]], [["2", ".wanix-taskstate-2.bin"]]],
+	["remove", ".wanix-taskstate-2.bin"],
 	["remove", ".wanix-vmstate-1.bin"],
 	["importArchive", "exports/2", [7]],
-	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]], []],
+	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]], [], [["2", ""]]],
 ]);
 if (got !== want) {
 	throw new Error("calls = " + got + ", want " + want);

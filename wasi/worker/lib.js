@@ -8472,6 +8472,10 @@ var WanixHandle2 = class {
     this.logger(`bundleVMStates`);
     return (await this.peer.call("BundleVMStates", [])).value || [];
   }
+  async bundleTaskStates() {
+    this.logger(`bundleTaskStates`);
+    return (await this.peer.call("BundleTaskStates", [])).value || [];
+  }
   async restoreBundleManifest(manifest) {
     this.logger(`restoreBundleManifest`);
     if (typeof manifest !== "string") {
@@ -8483,9 +8487,19 @@ var WanixHandle2 = class {
     this.logger(`exportBundle filesystems(${filesystems.length})`);
     const manifest = await this.bundleManifest(filesystems);
     const vmStates = await this.bundleVMStates();
+    const taskStates = await this.bundleTaskStates();
     if (vmStates.length) {
       manifest.vms = vmStates.map(({ data, ...vm }) => vm);
       attachBundleVMGuests(manifest);
+    }
+    if (taskStates.length) {
+      const tasks = new Map((manifest.tasks || []).map((task) => [task.id, task]));
+      for (const state of taskStates) {
+        const task = tasks.get(state.id);
+        if (task && state.state_path) {
+          task.state_path = state.state_path;
+        }
+      }
     }
     const requests = new Map(filesystems.map((desc) => [desc.id, desc]));
     const archives = [];
@@ -8513,11 +8527,20 @@ var WanixHandle2 = class {
       }
       archives.push(archive);
     }
-    const states = vmStates.filter((state) => state.state_path && state.data).map((state) => ({
-      id: state.id,
-      path: state.state_path,
-      data: state.data
-    }));
+    const states = [
+      ...vmStates.filter((state) => state.state_path && state.data).map((state) => ({
+        kind: "vm",
+        id: state.id,
+        path: state.state_path,
+        data: state.data
+      })),
+      ...taskStates.filter((state) => state.state_path && state.data).map((state) => ({
+        kind: "task",
+        id: state.id,
+        path: state.state_path,
+        data: state.data
+      }))
+    ];
     return { manifest, archives, states };
   }
   async importBundle(bundle) {
@@ -8548,11 +8571,19 @@ var WanixHandle2 = class {
       for (const state of bundle.states || []) {
         const target3 = state.path || state.state_path;
         if (!target3) {
-          throw new Error(`importBundle: VM state ${state.id || ""} missing path`);
+          throw new Error(`importBundle: state ${state.id || ""} missing path`);
         }
-        const vm = (manifest.vms || []).find((vm2) => vm2.id === state.id);
-        if (vm && vm.state_path !== target3) {
-          vm.state_path = target3;
+        const kind = state.kind || "vm";
+        if (kind === "task") {
+          const task = (manifest.tasks || []).find((task2) => task2.id === state.id);
+          if (task && task.state_path !== target3) {
+            task.state_path = target3;
+          }
+        } else {
+          const vm = (manifest.vms || []).find((vm2) => vm2.id === state.id);
+          if (vm && vm.state_path !== target3) {
+            vm.state_path = target3;
+          }
         }
         await this.writeFile(target3, bundleStateData(state.data));
         cleanup.push(target3);

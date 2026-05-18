@@ -40,6 +40,10 @@ func (r *Resource) ID() string {
 }
 
 func (r *Resource) Start(args ...string) error {
+	return r.StartWithState(nil, args...)
+}
+
+func (r *Resource) StartWithState(state []byte, args ...string) error {
 	env := make(map[string]any)
 
 	// Parse environment variables from args
@@ -144,6 +148,12 @@ func (r *Resource) Start(args ...string) error {
 	if !initialState.IsUndefined() {
 		worker["initial_state"] = initialState
 		transfers = append(transfers, initialState.Get("buffer"))
+	}
+	if len(state) != 0 {
+		buf := js.Global().Get("Uint8Array").New(len(state))
+		js.CopyBytesToJS(buf, state)
+		worker["checkpoint_state"] = buf
+		transfers = append(transfers, buf.Get("buffer"))
 	}
 	r.worker.Call("postMessage", map[string]any{"worker": worker}, transfers)
 

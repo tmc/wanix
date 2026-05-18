@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -51,6 +52,39 @@ func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]bun
 			state.Data = data
 		}
 		out = append(out, state)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return vmIDLess(out[i].ID, out[j].ID)
+	})
+	return out, nil
+}
+
+func collectBundleTaskStatesPlatform(root *wanix.Task, ctx context.Context) ([]bundleTaskState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var out []bundleTaskState
+	for _, task := range root.Tasks() {
+		if taskVMID(task) != "" || wanix.GetWorker(task) == nil {
+			continue
+		}
+		saveCtx, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+		data, err := saveTaskState(saveCtx, task)
+		cancel()
+		if err != nil {
+			if errors.Is(err, migration.ErrUnsupported) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				continue
+			}
+			return nil, fmt.Errorf("bundle task %s state: %w", task.ID(), err)
+		}
+		out = append(out, bundleTaskState{
+			ID:        task.ID(),
+			StatePath: taskStatePath(task.ID()),
+			Data:      data,
+		})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return vmIDLess(out[i].ID, out[j].ID)
@@ -123,9 +157,66 @@ func saveWorkerState(ctx context.Context, task *wanix.Task, id string) ([]byte, 
 	}
 }
 
+func saveTaskState(ctx context.Context, task *wanix.Task) ([]byte, error) {
+	worker, ok := wanix.GetWorker(task).(js.Value)
+	if !ok || worker.IsUndefined() || worker.IsNull() {
+		return nil, migration.ErrUnsupported
+	}
+	id := task.ID()
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	listener := js.FuncOf(func(this js.Value, args []js.Value) any {
+		msg := args[0].Get("data")
+		if msg.Get("type").String() != "wanix-checkpoint" || msg.Get("op").String() != "save-state" {
+			return nil
+		}
+		if got := msg.Get("id"); got.Type() == js.TypeString && got.String() != id {
+			return nil
+		}
+		if ok := msg.Get("ok"); ok.Type() == js.TypeBoolean && !ok.Bool() {
+			errText := migration.ErrUnsupported.Error()
+			if field := msg.Get("error"); field.Type() == js.TypeString && field.String() != "" {
+				errText = field.String()
+			}
+			select {
+			case done <- result{err: fmt.Errorf("%s: %w", errText, migration.ErrUnsupported)}:
+			default:
+			}
+			return nil
+		}
+		data, err := jsBytes(msg.Get("state"))
+		select {
+		case done <- result{data: data, err: err}:
+		default:
+		}
+		return nil
+	})
+	worker.Call("addEventListener", "message", listener)
+	defer listener.Release()
+	defer worker.Call("removeEventListener", "message", listener)
+
+	worker.Call("postMessage", map[string]any{
+		"type": "wanix-checkpoint",
+		"op":   "save-state",
+		"id":   id,
+	})
+	select {
+	case res := <-done:
+		return res.data, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 func jsBytes(v js.Value) ([]byte, error) {
 	if v.IsUndefined() || v.IsNull() {
 		return nil, fmt.Errorf("missing state")
+	}
+	if v.Type() == js.TypeString {
+		return []byte(v.String()), nil
 	}
 	var view js.Value
 	if buffer := v.Get("buffer"); !buffer.IsUndefined() && !buffer.IsNull() {

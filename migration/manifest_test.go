@@ -32,6 +32,7 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 			ID:         "1",
 			Kind:       "gojs",
 			State:      TaskStateExited,
+			StatePath:  ".wanix-taskstate-1.bin",
 			Alias:      "shell",
 			Command:    "rc",
 			Exit:       "0",
@@ -88,6 +89,9 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 	}
 	if got := out.Tasks[0].State; got != TaskStateExited {
 		t.Fatalf("task state = %q, want exited", got)
+	}
+	if got := out.Tasks[0].StatePath; got != ".wanix-taskstate-1.bin" {
+		t.Fatalf("task state path = %q, want .wanix-taskstate-1.bin", got)
 	}
 	if got := out.Tasks[0].ExportFSID; got != "exportfs" {
 		t.Fatalf("task export fs id = %q, want exportfs", got)
@@ -268,6 +272,9 @@ func TestValidateBundleManifestRejectsInvalidBody(t *testing.T) {
 		}},
 		{"task bad state", func(m *BundleManifest) {
 			m.Tasks[0].State = TaskState("mystery")
+		}},
+		{"task bad state path", func(m *BundleManifest) {
+			m.Tasks[0].StatePath = "../task.state"
 		}},
 		{"namespace task mismatch", func(m *BundleManifest) {
 			m.Tasks[0].Namespace.TaskID = "2"

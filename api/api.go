@@ -47,6 +47,7 @@ func Responder(sess mux.Session, task *wanix.Task) {
 	peer.Handle("ImportArchive", rpc.HandlerFunc(syscaller.importArchive))
 	peer.Handle("BundleManifest", rpc.HandlerFunc(syscaller.bundleManifest))
 	peer.Handle("BundleVMStates", rpc.HandlerFunc(syscaller.bundleVMStates))
+	peer.Handle("BundleTaskStates", rpc.HandlerFunc(syscaller.bundleTaskStates))
 	peer.Handle("RestoreBundleManifest", rpc.HandlerFunc(syscaller.restoreBundleManifest))
 	peer.Handle("Fstat", rpc.HandlerFunc(syscaller.fstat))
 	peer.Handle("Lstat", rpc.HandlerFunc(syscaller.lstat))

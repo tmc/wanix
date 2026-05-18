@@ -23,6 +23,10 @@ func (d *JSDriver) Check(t *wanix.Task) bool {
 }
 
 func (d *JSDriver) Start(t *wanix.Task) error {
+	return d.start(t, nil)
+}
+
+func (d *JSDriver) start(t *wanix.Task, state []byte) error {
 	data, err := fs.ReadFile(d.Root.NS(), t.Arg(0))
 	if err != nil {
 		return err
@@ -31,9 +35,17 @@ func (d *JSDriver) Start(t *wanix.Task) error {
 	js.CopyBytesToJS(jsBuf, data)
 	blob := js.Global().Get("Blob").New([]any{jsBuf}, js.ValueOf(map[string]any{"type": "text/javascript"}))
 	url := js.Global().Get("URL").Call("createObjectURL", blob)
-	return worker.StartTaskWorker(d.Workers, t, url.String())
+	return worker.StartTaskWorkerWithState(d.Workers, t, url.String(), state)
 }
 
-func (d *JSDriver) RestoreTask(t *wanix.Task, _ migration.TaskManifest) error {
-	return d.Start(t)
+func (d *JSDriver) RestoreTask(t *wanix.Task, manifest migration.TaskManifest) error {
+	var state []byte
+	if manifest.StatePath != "" {
+		var err error
+		state, err = fs.ReadFile(t.NS(), manifest.StatePath)
+		if err != nil {
+			return err
+		}
+	}
+	return d.start(t, state)
 }

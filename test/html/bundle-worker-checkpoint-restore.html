@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>wanix-bundle-worker-checkpoint-restore</title>
+    <script type="module" src="../../dist/wanix.min.js?v=bundle-worker-checkpoint-restore"></script>
+</head>
+<body>
+    <wanix-system id="source" wasm="../../dist/wanix.debug.wasm?v=bundle-worker-checkpoint-restore" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <wanix-system id="target" wasm="../../dist/wanix.debug.wasm?v=bundle-worker-checkpoint-restore" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <script type="module">
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function newTask(root, kind) {
+            return (await root.readText(["#task", "new", kind].join("/"))).trim();
+        }
+
+        async function waitFor(label, fn, timeoutMs=10000) {
+            const deadline = Date.now() + timeoutMs;
+            let last;
+            while (Date.now() < deadline) {
+                try {
+                    const value = await fn();
+                    if (value) {
+                        return value;
+                    }
+                } catch (error) {
+                    last = error;
+                }
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            throw new Error(`${label}: ${last ? last.message || last : "timeout"}`);
+        }
+
+        function taskManifest(manifest, id) {
+            return (manifest.tasks || []).find(task => task.id === id) || {};
+        }
+
+        function taskState(states, id) {
+            const state = states.find(state => state.id === id);
+            if (!state) {
+                return null;
+            }
+            const data = state.data;
+            if (typeof data === "string") {
+                return JSON.parse(data);
+            }
+            return JSON.parse(new TextDecoder().decode(data));
+        }
+
+        const progress = {};
+        window.wanixBundleWorkerCheckpointResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            progress.step = "ready";
+            await Promise.all([ready(source), ready(target)]);
+
+            progress.step = "seed";
+            await source.root.writeFile("checkpoint-worker.js", `
+                const encoder = new TextEncoder();
+                const decoder = new TextDecoder();
+                let checkpoint = {counter: 7, restored: false};
+                globalThis.onmessage = event => {
+                    const message = event.data || {};
+                    if (message.worker) {
+                        if (message.worker.checkpoint_state) {
+                            checkpoint = JSON.parse(decoder.decode(message.worker.checkpoint_state));
+                            checkpoint.restored = true;
+                        }
+                        globalThis.wanixWorker = message.worker;
+                        return;
+                    }
+                    if (message.type !== "wanix-checkpoint" || message.op !== "save-state") {
+                        return;
+                    }
+                    globalThis.postMessage({
+                        type: "wanix-checkpoint",
+                        op: "save-state",
+                        id: message.id,
+                        ok: true,
+                        state: encoder.encode(JSON.stringify(checkpoint)),
+                    });
+                };
+            `);
+
+            progress.step = "start";
+            const taskID = await newTask(source.root, "js");
+            await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "checkpoint-worker.js");
+            await source.root.writeFile(["#task", taskID, "ctl"].join("/"), "start");
+
+            progress.step = "checkpoint-source";
+            const sourceState = await waitFor("source task state", async () => {
+                const states = await source.root.bundleTaskStates();
+                return taskState(states, taskID);
+            });
+
+            progress.step = "export";
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "."},
+            ]));
+            const manifestTask = taskManifest(bundle.manifest, taskID);
+            const bundleTaskState = taskState(bundle.states, taskID);
+
+            progress.step = "import";
+            const restore = await target.root.importBundle(bundle);
+
+            progress.step = "checkpoint-target";
+            const targetState = await waitFor("target task state", async () => {
+                const states = await target.root.bundleTaskStates();
+                const state = taskState(states, taskID);
+                return state && state.restored ? state : null;
+            });
+
+            progress.step = "verify";
+            const targetManifest = await target.root.bundleManifest(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "."},
+            ]));
+            const targetTask = taskManifest(targetManifest, taskID);
+            const result = {
+                ok: sourceState.counter === 7 &&
+                    sourceState.restored === false &&
+                    bundleTaskState.counter === 7 &&
+                    manifestTask.state === "running" &&
+                    manifestTask.state_path === `.wanix-taskstate-${taskID}.bin` &&
+                    targetState.counter === 7 &&
+                    targetState.restored === true &&
+                    targetTask.state === "running" &&
+                    (restore.tasks || []).includes(taskID),
+                taskID,
+                sourceState,
+                bundleTaskState,
+                targetState,
+                manifestStatePath: manifestTask.state_path || "",
+                targetStatePath: targetTask.state_path || "",
+                tasks: restore.tasks || [],
+                states: bundle.states.map(state => [state.kind || "", state.id, state.path || state.state_path || ""]),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                progress,
+                stack: String(error && error.stack || ""),
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>

@@ -18,10 +18,14 @@ func FromTask(t *wanix.Task) js.Value {
 }
 
 func StartTaskWorker(svc *Device, t *wanix.Task, blobURL string) error {
+	return StartTaskWorkerWithState(svc, t, blobURL, nil)
+}
+
+func StartTaskWorkerWithState(svc *Device, t *wanix.Task, blobURL string, state []byte) error {
 	w, err := svc.Alloc(t)
 	if err != nil {
 		return err
 	}
 	args := append([]string{blobURL}, strings.Split(t.Cmd(), " ")...)
-	return w.Start(args...)
+	return w.StartWithState(state, args...)
 }
