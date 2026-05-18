@@ -59,6 +59,7 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 			ID:        "v86/1",
 			Kind:      "v86",
 			StatePath: "vm/1.state",
+			GuestFSID: "guestfs",
 		}},
 	}
 
@@ -96,6 +97,9 @@ func TestBundleManifestRoundTrip(t *testing.T) {
 	}
 	if got := out.Tasks[0].Namespace.Binds[0].SrcFSID; got != "rootfs" {
 		t.Fatalf("namespace bind src fs id = %q, want rootfs", got)
+	}
+	if got := out.VMs[0].GuestFSID; got != "guestfs" {
+		t.Fatalf("vm guest fs id = %q, want guestfs", got)
 	}
 }
 

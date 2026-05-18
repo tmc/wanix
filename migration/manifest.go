@@ -345,5 +345,6 @@ type VMManifest struct {
 	ID        string            `json:"id"`
 	Kind      string            `json:"kind,omitempty"`
 	StatePath string            `json:"state_path,omitempty"`
+	GuestFSID string            `json:"guest_fs_id,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
 }

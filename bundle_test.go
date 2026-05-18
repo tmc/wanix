@@ -424,7 +424,7 @@ func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 	})
 	var restoredVMs []migration.VMManifest
 	restored, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
-		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
+		RestoreVM: func(ctx context.Context, manifest migration.VMManifest, lookup vfs.FSIDLookup) (string, func(), error) {
 			if ctx == nil {
 				t.Fatal("RestoreVM context is nil")
 			}
@@ -458,7 +458,7 @@ func TestRestoreBundleRollsBackVMsOnTaskFailure(t *testing.T) {
 	})
 	var rolledBack []string
 	_, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
-		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
+		RestoreVM: func(ctx context.Context, manifest migration.VMManifest, lookup vfs.FSIDLookup) (string, func(), error) {
 			return manifest.ID, func() {
 				rolledBack = append(rolledBack, manifest.ID)
 			}, nil

@@ -58,8 +58,8 @@ func (s *syscaller) restoreBundleManifest(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 	restored, err := s.task.Root().RestoreBundleManifest(s.task.Context(), manifest, lookup, wanix.BundleRestoreOptions{
-		RestoreVM: func(ctx context.Context, manifest migration.VMManifest) (string, func(), error) {
-			return importBundleVM(ctx, s.task.Root(), manifest)
+		RestoreVM: func(ctx context.Context, manifest migration.VMManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			return importBundleVM(ctx, s.task.Root(), manifest, lookup)
 		},
 	})
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *syscaller) restoreBundleManifest(r rpc.Responder, c *rpc.Call) {
 	r.Return(map[string]any{"tasks": ids, "vms": restored.VMs})
 }
 
-func importBundleVM(ctx context.Context, root *wanix.Task, manifest migration.VMManifest) (string, func(), error) {
+func importBundleVM(ctx context.Context, root *wanix.Task, manifest migration.VMManifest, lookup vfs.FSIDLookup) (string, func(), error) {
 	device, name, err := fs.ResolveTo[*vm.Device](root.NS(), ctx, "#vm")
 	if err != nil {
 		return "", nil, fmt.Errorf("restore bundle vms: %w", err)
@@ -93,6 +93,25 @@ func importBundleVM(ctx context.Context, root *wanix.Task, manifest migration.VM
 	}
 	if err != nil {
 		return "", nil, err
+	}
+	if manifest.GuestFSID != "" {
+		if lookup == nil {
+			device.Remove(restored.ID())
+			return "", nil, fmt.Errorf("restore bundle vm %s guest filesystem %s: %w", manifest.ID, manifest.GuestFSID, migration.ErrUnknownFilesystem)
+		}
+		guest, err := lookup(manifest.GuestFSID)
+		if err != nil {
+			device.Remove(restored.ID())
+			return "", nil, fmt.Errorf("restore bundle vm %s guest filesystem %s: %w", manifest.ID, manifest.GuestFSID, err)
+		}
+		if guest == nil {
+			device.Remove(restored.ID())
+			return "", nil, fmt.Errorf("restore bundle vm %s guest filesystem %s: %w", manifest.ID, manifest.GuestFSID, migration.ErrUnknownFilesystem)
+		}
+		if err := restored.SetGuest(guest); err != nil {
+			device.Remove(restored.ID())
+			return "", nil, fmt.Errorf("restore bundle vm %s guest filesystem %s: %w", manifest.ID, manifest.GuestFSID, err)
+		}
 	}
 	return restored.ID(), func() { device.Remove(restored.ID()) }, nil
 }
@@ -151,7 +170,17 @@ func bundleFilesystemRefs(ctx context.Context, ns *vfs.NS, descs []migration.Fil
 			return nil, fmt.Errorf("bundle filesystem %s source %s: %w", desc.ID, desc.Source, err)
 		}
 		if name != "." {
-			return nil, fmt.Errorf("bundle filesystem %s source %s resolved to %s: %w", desc.ID, desc.Source, name, fs.ErrInvalid)
+			info, err := fs.StatContext(ctx, fsys, name)
+			if err != nil {
+				return nil, fmt.Errorf("bundle filesystem %s source %s: %v: %w", desc.ID, desc.Source, err, fs.ErrInvalid)
+			}
+			if !info.IsDir() {
+				return nil, fmt.Errorf("bundle filesystem %s source %s resolved to %s: %w", desc.ID, desc.Source, name, fs.ErrInvalid)
+			}
+			fsys, err = fs.Sub(fsys, name)
+			if err != nil {
+				return nil, fmt.Errorf("bundle filesystem %s source %s: %w", desc.ID, desc.Source, err)
+			}
 		}
 		refs = append(refs, bundleFilesystemRef{id: desc.ID, fsys: fsys})
 	}

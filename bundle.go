@@ -25,7 +25,7 @@ type BundleManifestOptions struct {
 }
 
 // VMRestoreFunc restores a VM resource descriptor and returns an undo function.
-type VMRestoreFunc func(context.Context, migration.VMManifest) (id string, rollback func(), err error)
+type VMRestoreFunc func(context.Context, migration.VMManifest, vfs.FSIDLookup) (id string, rollback func(), err error)
 
 // BundleRestoreOptions provides already-materialized filesystems for bundle restore.
 type BundleRestoreOptions struct {
@@ -174,13 +174,15 @@ func (d *TaskFS) restoreBundle(ctx context.Context, manifest migration.BundleMan
 	if err := checkBundleRestoreUnsupported(manifest); err != nil {
 		return nil, err
 	}
-	vms, err := restoreBundleVMs(ctx, manifest.VMs, opts.RestoreVM)
-	if err != nil {
-		return nil, err
+	if len(manifest.VMs) != 0 && opts.RestoreVM == nil {
+		return nil, fmt.Errorf("restore bundle vms: %w", migration.ErrUnsupported)
 	}
 	filesystems, lookup, err := restoreBundleFilesystems(manifest.Filesystems, external)
 	if err != nil {
-		rollbackBundleVMs(vms)
+		return nil, err
+	}
+	vms, err := restoreBundleVMs(ctx, manifest.VMs, opts.RestoreVM, lookup)
+	if err != nil {
 		return nil, err
 	}
 	taskManifest := manifest
@@ -329,7 +331,7 @@ type restoredBundleVM struct {
 	rollback func()
 }
 
-func restoreBundleVMs(ctx context.Context, manifests []migration.VMManifest, restore VMRestoreFunc) ([]restoredBundleVM, error) {
+func restoreBundleVMs(ctx context.Context, manifests []migration.VMManifest, restore VMRestoreFunc, lookup vfs.FSIDLookup) ([]restoredBundleVM, error) {
 	if len(manifests) == 0 {
 		return nil, nil
 	}
@@ -338,7 +340,7 @@ func restoreBundleVMs(ctx context.Context, manifests []migration.VMManifest, res
 	}
 	restored := make([]restoredBundleVM, 0, len(manifests))
 	for _, manifest := range manifests {
-		id, rollback, err := restore(ctx, manifest)
+		id, rollback, err := restore(ctx, manifest, lookup)
 		if err != nil {
 			rollbackBundleVMs(restored)
 			return nil, err

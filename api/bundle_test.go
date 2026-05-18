@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"tractor.dev/toolkit-go/duplex/codec"
 	"tractor.dev/toolkit-go/duplex/mux"
@@ -22,10 +23,20 @@ import (
 
 func TestBundleFilesystemResolverExportsManifest(t *testing.T) {
 	root, backing := newBundleAPIRoot(t)
+	if err := fs.Mkdir(backing, "sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(backing, "sub/nested.txt", []byte("nested"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	descs := []migration.FilesystemDescriptor{{
 		ID:     "rootfs",
 		Kind:   "memfs",
 		Source: "mnt",
+	}, {
+		ID:     "subfs",
+		Kind:   "memfs",
+		Source: "mnt/sub",
 	}, {
 		ID:     "taskfs",
 		Kind:   "taskfs",
@@ -68,6 +79,17 @@ func TestBundleFilesystemResolverExportsManifest(t *testing.T) {
 	}
 	if !fs.Equal(fsys, backing) {
 		t.Fatalf("lookup returned %T, want backing fs", fsys)
+	}
+	sub, err := lookup("subfs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := fs.ReadFile(sub, "nested.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "nested" {
+		t.Fatalf("sub filesystem data = %q, want nested", data)
 	}
 }
 
@@ -298,6 +320,64 @@ func TestRestoreBundleManifestRPCRestoresVMDescriptors(t *testing.T) {
 	}
 	if string(restored.State()) != "state" {
 		t.Fatalf("restored vm state = %q, want state", restored.State())
+	}
+}
+
+func TestRestoreBundleManifestRPCRestoresVMGuestFilesystem(t *testing.T) {
+	root, backing := newBundleAPIRoot(t)
+	dev := bindBundleAPIVMDevice(t, root)
+	client := newBundleAPIClient(t, root)
+	if err := fs.WriteFile(backing, "guest.txt", []byte("guest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := migration.BundleManifest{
+		Version: migration.BundleManifestVersion,
+		Mode:    migration.ModeMigrate,
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:     "guestfs",
+			Kind:   "memfs",
+			Source: "mnt",
+		}},
+		VMs: []migration.VMManifest{{
+			ID:        "3",
+			Kind:      "v86",
+			GuestFSID: "guestfs",
+		}},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		VMs []string `json:"vms"`
+	}
+	if _, err := client.Call(context.Background(), "RestoreBundleManifest", []any{string(data)}, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.VMs) != 1 || result.VMs[0] != "3" {
+		t.Fatalf("restored vms = %#v, want vm 3", result.VMs)
+	}
+	restored, err := dev.Lookup("3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Guest() == nil {
+		t.Fatal("restored vm guest is nil")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err = fs.ReadFile(root.NS(), "#vm/3/guest/guest.txt")
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read restored vm guest: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if string(data) != "guest" {
+		t.Fatalf("guest data = %q, want guest", data)
 	}
 }
 
