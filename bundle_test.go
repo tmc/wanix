@@ -445,6 +445,130 @@ func TestRestoreBundleRestoresVMDescriptors(t *testing.T) {
 	}
 }
 
+func TestRestoreBundleRestoresWorkerDescriptors(t *testing.T) {
+	rootfs := memfs.New()
+	manifest := testBundleManifest(migration.BundleManifest{
+		Components: []migration.ComponentDescriptor{{
+			ID:   "worker/5",
+			Kind: "worker",
+		}},
+		Filesystems: []migration.FilesystemDescriptor{{
+			ID:   "rootfs",
+			Kind: "memfs",
+		}},
+		Workers: []migration.WorkerManifest{{
+			ID:        "5",
+			Kind:      "browser",
+			StatePath: "workers/5.state",
+			Labels: map[string]string{
+				"runtime": "js",
+			},
+		}},
+	})
+	var restoredWorkers []migration.WorkerManifest
+	restored, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
+		Filesystems: map[string]fs.FS{"rootfs": rootfs},
+		RestoreWorker: func(ctx context.Context, manifest migration.WorkerManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			if ctx == nil {
+				t.Fatal("RestoreWorker context is nil")
+			}
+			got, err := lookup("rootfs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != rootfs {
+				t.Fatalf("RestoreWorker lookup rootfs = %#v, want rootfs", got)
+			}
+			restoredWorkers = append(restoredWorkers, manifest)
+			return "worker-" + manifest.ID, func() {
+				t.Fatal("rollback called after successful restore")
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(restored.Workers, []string{"worker-5"}) {
+		t.Fatalf("restored workers = %#v, want worker-5", restored.Workers)
+	}
+	if len(restoredWorkers) != 1 || restoredWorkers[0].Kind != "browser" || restoredWorkers[0].StatePath != "workers/5.state" || restoredWorkers[0].Labels["runtime"] != "js" {
+		t.Fatalf("RestoreWorker manifests = %#v, want browser worker with state", restoredWorkers)
+	}
+}
+
+func TestRestoreBundleRollsBackWorkersOnWorkerFailure(t *testing.T) {
+	want := errors.New("worker restore failed")
+	manifest := testBundleManifest(migration.BundleManifest{
+		Workers: []migration.WorkerManifest{
+			{ID: "1", Kind: "browser"},
+			{ID: "2", Kind: "browser"},
+		},
+	})
+	var rolledBack []string
+	_, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
+		RestoreWorker: func(ctx context.Context, manifest migration.WorkerManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			if manifest.ID == "2" {
+				return "", nil, want
+			}
+			return manifest.ID, func() {
+				rolledBack = append(rolledBack, manifest.ID)
+			}, nil
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("RestoreBundle error = %v, want %v", err, want)
+	}
+	if !reflect.DeepEqual(rolledBack, []string{"1"}) {
+		t.Fatalf("rolled back workers = %#v, want 1", rolledBack)
+	}
+}
+
+func TestRestoreBundleRollsBackWorkersOnVMFailure(t *testing.T) {
+	want := errors.New("vm restore failed")
+	manifest := testBundleManifest(migration.BundleManifest{
+		Workers: []migration.WorkerManifest{{ID: "worker1", Kind: "browser"}},
+		VMs:     []migration.VMManifest{{ID: "vm1", Kind: "v86"}},
+	})
+	var rolledBack []string
+	_, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
+		RestoreWorker: func(ctx context.Context, manifest migration.WorkerManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			return manifest.ID, func() {
+				rolledBack = append(rolledBack, manifest.ID)
+			}, nil
+		},
+		RestoreVM: func(ctx context.Context, manifest migration.VMManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			return "", nil, want
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("RestoreBundle error = %v, want %v", err, want)
+	}
+	if !reflect.DeepEqual(rolledBack, []string{"worker1"}) {
+		t.Fatalf("rolled back workers = %#v, want worker1", rolledBack)
+	}
+}
+
+func TestRestoreBundleRollsBackWorkersOnTaskFailure(t *testing.T) {
+	manifest := testBundleManifest(migration.BundleManifest{
+		Workers: []migration.WorkerManifest{{ID: "worker1", Kind: "browser"}},
+		Tasks:   []migration.TaskManifest{{ID: "1", Kind: "missing"}},
+	})
+	var rolledBack []string
+	_, err := RestoreBundle(context.Background(), manifest, BundleRestoreOptions{
+		RestoreWorker: func(ctx context.Context, manifest migration.WorkerManifest, lookup vfs.FSIDLookup) (string, func(), error) {
+			return manifest.ID, func() {
+				rolledBack = append(rolledBack, manifest.ID)
+			}, nil
+		},
+	})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("RestoreBundle error = %v, want ErrNotExist", err)
+	}
+	if !reflect.DeepEqual(rolledBack, []string{"worker1"}) {
+		t.Fatalf("rolled back workers = %#v, want worker1", rolledBack)
+	}
+}
+
 func TestRestoreBundleRollsBackVMsOnTaskFailure(t *testing.T) {
 	manifest := testBundleManifest(migration.BundleManifest{
 		VMs: []migration.VMManifest{{

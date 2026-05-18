@@ -27,11 +27,15 @@ type BundleManifestOptions struct {
 // VMRestoreFunc restores a VM resource descriptor and returns an undo function.
 type VMRestoreFunc func(context.Context, migration.VMManifest, vfs.FSIDLookup) (id string, rollback func(), err error)
 
-// BundleRestoreOptions provides already-materialized filesystems for bundle restore.
+// WorkerRestoreFunc restores a worker resource descriptor and returns an undo function.
+type WorkerRestoreFunc func(context.Context, migration.WorkerManifest, vfs.FSIDLookup) (id string, rollback func(), err error)
+
+// BundleRestoreOptions provides filesystems and runtime restorers for bundle restore.
 type BundleRestoreOptions struct {
-	TaskFS      *TaskFS
-	Filesystems map[string]fs.FS
-	RestoreVM   VMRestoreFunc
+	TaskFS        *TaskFS
+	Filesystems   map[string]fs.FS
+	RestoreVM     VMRestoreFunc
+	RestoreWorker WorkerRestoreFunc
 }
 
 // BundleRestore is the result of restoring a migration bundle manifest.
@@ -40,6 +44,7 @@ type BundleRestore struct {
 	Filesystems map[string]fs.FS
 	Tasks       []*Task
 	VMs         []string
+	Workers     []string
 }
 
 // BundleManifest returns a migration manifest for the task's task filesystem.
@@ -54,14 +59,16 @@ func (r *Task) ImportBundleManifest(ctx context.Context, manifest migration.Bund
 
 // RestoreBundleManifest restores a migration bundle manifest into the task's
 // task filesystem. The caller supplies filesystem lookup and optional VM
-// restoration because those resources are owned by the embedding runtime.
+// and worker restoration because those resources are owned by the embedding
+// runtime.
 func (r *Task) RestoreBundleManifest(ctx context.Context, manifest migration.BundleManifest, lookup vfs.FSIDLookup, opts BundleRestoreOptions) (*BundleRestore, error) {
 	return r.fsys.restoreBundle(ctx, manifest, r, lookup, opts)
 }
 
-// ValidateBundleRestore reports whether manifest can be restored by this package.
+// ValidateBundleRestore reports whether manifest can be restored without
+// runtime-specific worker hooks.
 func ValidateBundleRestore(manifest migration.BundleManifest) error {
-	return checkBundleRestoreUnsupported(manifest)
+	return checkBundleRestoreUnsupported(manifest, false)
 }
 
 // BundleManifest returns a migration manifest for the task filesystem.
@@ -150,8 +157,8 @@ func (r *Task) checkBundleExportable() error {
 //
 // Non-cowfs filesystem descriptors must already be materialized in opts by ID.
 // Cowfs descriptors are rebuilt from their base and overlay filesystem IDs.
-// VM descriptors are restored through opts.RestoreVM when present. Worker
-// manifests still fail closed.
+// VM and worker descriptors are restored through opts because those resources
+// are owned by the embedding runtime.
 func RestoreBundle(ctx context.Context, manifest migration.BundleManifest, opts BundleRestoreOptions) (*BundleRestore, error) {
 	taskfs := opts.TaskFS
 	if taskfs == nil {
@@ -171,36 +178,52 @@ func (d *TaskFS) restoreBundle(ctx context.Context, manifest migration.BundleMan
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := checkBundleRestoreUnsupported(manifest); err != nil {
+	if err := checkBundleRestoreUnsupported(manifest, opts.RestoreWorker != nil); err != nil {
 		return nil, err
 	}
 	if len(manifest.VMs) != 0 && opts.RestoreVM == nil {
 		return nil, fmt.Errorf("restore bundle vms: %w", migration.ErrUnsupported)
 	}
+	if len(manifest.Workers) != 0 && opts.RestoreWorker == nil {
+		return nil, fmt.Errorf("restore bundle workers: %w", migration.ErrUnsupported)
+	}
 	filesystems, lookup, err := restoreBundleFilesystems(manifest.Filesystems, external)
+	if err != nil {
+		return nil, err
+	}
+	workers, err := restoreBundleWorkers(ctx, manifest.Workers, opts.RestoreWorker, lookup)
 	if err != nil {
 		return nil, err
 	}
 	vms, err := restoreBundleVMs(ctx, manifest.VMs, opts.RestoreVM, lookup)
 	if err != nil {
+		rollbackBundleWorkers(workers)
 		return nil, err
 	}
 	taskManifest := manifest
+	taskManifest.Components = nil
 	taskManifest.VMs = nil
+	taskManifest.Workers = nil
 	tasks, err := d.importBundleManifest(ctx, taskManifest, parent, lookup)
 	if err != nil {
 		rollbackBundleVMs(vms)
+		rollbackBundleWorkers(workers)
 		return nil, err
 	}
 	vmIDs := make([]string, 0, len(vms))
 	for _, vm := range vms {
 		vmIDs = append(vmIDs, vm.id)
 	}
+	workerIDs := make([]string, 0, len(workers))
+	for _, worker := range workers {
+		workerIDs = append(workerIDs, worker.id)
+	}
 	return &BundleRestore{
 		TaskFS:      d,
 		Filesystems: filesystems,
 		Tasks:       tasks,
 		VMs:         vmIDs,
+		Workers:     workerIDs,
 	}, nil
 }
 
@@ -297,14 +320,14 @@ func (d *TaskFS) rollbackImportedTasks(tasks []*Task, nextID int) {
 }
 
 func checkBundleTaskUnsupported(manifest migration.BundleManifest) error {
-	return checkBundleUnsupported(manifest, false)
+	return checkBundleUnsupported(manifest, false, false)
 }
 
-func checkBundleRestoreUnsupported(manifest migration.BundleManifest) error {
-	return checkBundleUnsupported(manifest, true)
+func checkBundleRestoreUnsupported(manifest migration.BundleManifest, allowWorkers bool) error {
+	return checkBundleUnsupported(manifest, true, allowWorkers)
 }
 
-func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool) error {
+func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool, allowWorkers bool) error {
 	if err := migration.ValidateBundleManifest(manifest); err != nil {
 		return err
 	}
@@ -314,11 +337,18 @@ func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool) er
 		}
 	}
 	if len(manifest.Workers) != 0 {
-		return fmt.Errorf("restore bundle workers: %w", migration.ErrUnsupported)
+		if !allowWorkers {
+			return fmt.Errorf("restore bundle workers: %w", migration.ErrUnsupported)
+		}
 	}
 	for _, component := range manifest.Components {
 		switch component.Kind {
 		case "", "task", "filesystem", cowfs.FilesystemKind:
+		case "worker":
+			if allowWorkers {
+				continue
+			}
+			return fmt.Errorf("restore bundle component %s kind %q: %w", component.ID, component.Kind, migration.ErrUnsupported)
 		default:
 			return fmt.Errorf("restore bundle component %s kind %q: %w", component.ID, component.Kind, migration.ErrUnsupported)
 		}
@@ -329,6 +359,41 @@ func checkBundleUnsupported(manifest migration.BundleManifest, allowVMs bool) er
 type restoredBundleVM struct {
 	id       string
 	rollback func()
+}
+
+type restoredBundleWorker struct {
+	id       string
+	rollback func()
+}
+
+func restoreBundleWorkers(ctx context.Context, manifests []migration.WorkerManifest, restore WorkerRestoreFunc, lookup vfs.FSIDLookup) ([]restoredBundleWorker, error) {
+	if len(manifests) == 0 {
+		return nil, nil
+	}
+	if restore == nil {
+		return nil, fmt.Errorf("restore bundle workers: %w", migration.ErrUnsupported)
+	}
+	restored := make([]restoredBundleWorker, 0, len(manifests))
+	for _, manifest := range manifests {
+		id, rollback, err := restore(ctx, manifest, lookup)
+		if err != nil {
+			rollbackBundleWorkers(restored)
+			return nil, err
+		}
+		if id == "" {
+			id = manifest.ID
+		}
+		restored = append(restored, restoredBundleWorker{id: id, rollback: rollback})
+	}
+	return restored, nil
+}
+
+func rollbackBundleWorkers(workers []restoredBundleWorker) {
+	for i := len(workers) - 1; i >= 0; i-- {
+		if workers[i].rollback != nil {
+			workers[i].rollback()
+		}
+	}
 }
 
 func restoreBundleVMs(ctx context.Context, manifests []migration.VMManifest, restore VMRestoreFunc, lookup vfs.FSIDLookup) ([]restoredBundleVM, error) {
