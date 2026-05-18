@@ -4079,6 +4079,7 @@ var WanixHandle = class {
         }
       }
     }
+    checkBundleRunningTaskStates(manifest, vmStates, taskStates);
     const requests = new Map(filesystems.map((desc) => [desc.id, desc]));
     const archives = [];
     for (const desc of manifest.filesystems || []) {
@@ -4375,6 +4376,32 @@ function attachBundleVMGuests(manifest) {
       vm.guest_fs_id = guest.id;
     }
   }
+}
+function checkBundleRunningTaskStates(manifest, vmStates, taskStates) {
+  const taskStatesByID = new Map((taskStates || []).filter((state) => state.state_path && state.data !== void 0 && state.data !== null).map((state) => [String(state.id), state]));
+  const vmStatesByID = new Map((vmStates || []).filter((state) => state.state_path && state.data !== void 0 && state.data !== null).map((state) => [String(state.id), state]));
+  for (const task of manifest.tasks || []) {
+    if (task.state !== "running") {
+      continue;
+    }
+    const vmID = bundleTaskVMID(task);
+    if (vmID && vmStatesByID.has(vmID)) {
+      continue;
+    }
+    if (task.state_path || taskStatesByID.has(String(task.id))) {
+      continue;
+    }
+    throw new Error(`exportBundle: running task ${task.id} missing checkpoint state`);
+  }
+}
+function bundleTaskVMID(task) {
+  for (const line of task.env || []) {
+    const eq = line.indexOf("=");
+    if (eq > 0 && line.slice(0, eq) === "vm") {
+      return line.slice(eq + 1);
+    }
+  }
+  return "";
 }
 if (!ReadableStream.prototype[Symbol.asyncIterator]) {
   ReadableStream.prototype[Symbol.asyncIterator] = async function* () {

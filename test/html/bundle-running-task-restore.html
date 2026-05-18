@@ -54,35 +54,29 @@
             await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "root/runner.js");
             await source.root.writeFile(["#task", taskID, "ctl"].join("/"), "start");
 
-            progress.step = "export";
-            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+            progress.step = "manifest";
+            const sourceManifest = await source.root.bundleManifest(window.WanixBundleFilesystems([
                 {id: "rootfs", source: "root"},
             ]));
-            const sourceState = taskState(bundle.manifest, taskID);
+            const sourceState = taskState(sourceManifest, taskID);
 
-            progress.step = "import";
-            const restore = await target.root.importBundle(bundle);
+            progress.step = "export";
+            let exportError = "";
+            try {
+                await source.root.exportBundle(window.WanixBundleFilesystems([
+                    {id: "rootfs", source: "root"},
+                ]));
+            } catch (error) {
+                exportError = String(error && error.message || error);
+            }
 
             progress.step = "verify";
-            const targetManifest = await target.root.bundleManifest(window.WanixBundleFilesystems([
-                {id: "rootfs", source: "root"},
-            ]));
-            const targetState = taskState(targetManifest, taskID);
-            const restoredCmd = await target.root.readText(["#task", taskID, "cmd"].join("/"));
-            const runner = await target.root.readText("root/runner.js");
             const result = {
                 ok: sourceState === "running" &&
-                    targetState === "running" &&
-                    restoredCmd.trim() === "root/runner.js" &&
-                    runner.includes("wanixWorker") &&
-                    (restore.tasks || []).includes(taskID),
+                    exportError.includes(`running task ${taskID} missing checkpoint state`),
                 taskID,
                 sourceState,
-                targetState,
-                restoredCmd: restoredCmd.trim(),
-                tasks: restore.tasks || [],
-                archives: bundle.archives.length,
-                archiveIDs: bundle.archives.map(archive => archive.id),
+                exportError,
             };
             document.body.dataset.result = JSON.stringify(result);
             return result;

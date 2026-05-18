@@ -831,6 +831,28 @@ await h.importBundle({
 	},
 	archives: [{id: "exportfs", source: "#task/2/export", target: "exports/2", data: new Uint8Array([7])}],
 });
+
+const failClosed = Object.create(WanixHandle.prototype);
+failClosed.logger = () => {};
+failClosed.bundleManifest = async () => ({
+	version: "wanix-migration-v1",
+	mode: "migrate",
+	tasks: [{id: "9", kind: "js", state: "running"}],
+});
+failClosed.bundleVMStates = async () => [];
+failClosed.bundleTaskStates = async () => [];
+failClosed.archive = async () => {
+	throw new Error("archive should not be called");
+};
+try {
+	await failClosed.exportBundle([]);
+	throw new Error("exportBundle succeeded for running task without state");
+} catch (error) {
+	if (!String(error && error.message || error).includes("running task 9 missing checkpoint state")) {
+		throw error;
+	}
+}
+
 const got = JSON.stringify(calls);
 const want = JSON.stringify([
 	["bundleManifest", filesystems],
