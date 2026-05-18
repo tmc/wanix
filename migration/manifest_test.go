@@ -179,6 +179,168 @@ func TestValidateBundleManifestRejectsInvalidHeader(t *testing.T) {
 	}
 }
 
+func TestValidateBundleManifestRejectsInvalidBody(t *testing.T) {
+	valid := func() BundleManifest {
+		return BundleManifest{
+			Version: BundleManifestVersion,
+			Mode:    ModeMigrate,
+			Filesystems: []FilesystemDescriptor{{
+				ID:     "rootfs",
+				Kind:   "memfs",
+				Source: "mnt",
+			}},
+			Tasks: []TaskManifest{{
+				ID:    "1",
+				Kind:  "auto",
+				State: TaskStateCreated,
+				Namespace: NamespaceManifest{
+					TaskID: "1",
+					Binds: []BindManifest{{
+						DstPath: ".",
+						SrcFSID: "rootfs",
+						SrcPath: ".",
+						Mode:    "replace",
+						Index:   0,
+						Root:    true,
+					}},
+				},
+				FDs: []FDManifest{{
+					FD:         3,
+					Kind:       "file",
+					Path:       "tmp/log",
+					Restorable: true,
+				}},
+			}},
+			VMs: []VMManifest{{
+				ID:        "1",
+				Kind:      "v86",
+				StatePath: "vm/1.state",
+			}},
+			Workers: []WorkerManifest{{
+				ID:        "browser",
+				Kind:      "service-worker",
+				StatePath: "workers/browser.state",
+			}},
+		}
+	}
+	tests := []struct {
+		name   string
+		mutate func(*BundleManifest)
+	}{
+		{"component missing id", func(m *BundleManifest) {
+			m.Components = []ComponentDescriptor{{Kind: "task"}}
+		}},
+		{"component duplicate id", func(m *BundleManifest) {
+			m.Components = []ComponentDescriptor{{ID: "task/1"}, {ID: "task/1"}}
+		}},
+		{"component empty dependency", func(m *BundleManifest) {
+			m.Components = []ComponentDescriptor{{ID: "task/1", Depends: []string{""}}}
+		}},
+		{"filesystem missing id", func(m *BundleManifest) {
+			m.Filesystems[0].ID = ""
+		}},
+		{"filesystem duplicate id", func(m *BundleManifest) {
+			m.Filesystems = append(m.Filesystems, m.Filesystems[0])
+		}},
+		{"filesystem bad source", func(m *BundleManifest) {
+			m.Filesystems[0].Source = "../mnt"
+		}},
+		{"task missing id", func(m *BundleManifest) {
+			m.Tasks[0].ID = ""
+		}},
+		{"task duplicate id", func(m *BundleManifest) {
+			m.Tasks = append(m.Tasks, m.Tasks[0])
+		}},
+		{"task missing kind", func(m *BundleManifest) {
+			m.Tasks[0].Kind = ""
+		}},
+		{"task bad state", func(m *BundleManifest) {
+			m.Tasks[0].State = TaskState("mystery")
+		}},
+		{"namespace task mismatch", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.TaskID = "2"
+		}},
+		{"bind bad destination", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds[0].DstPath = "../escape"
+		}},
+		{"bind bad source", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds[0].SrcPath = "../escape"
+		}},
+		{"bind missing filesystem", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds[0].SrcFSID = ""
+		}},
+		{"bind bad mode", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds[0].Mode = "sideways"
+		}},
+		{"bind negative index", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds[0].Index = -1
+		}},
+		{"bind duplicate index", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds = append(m.Tasks[0].Namespace.Binds, BindManifest{
+				DstPath: ".",
+				SrcFSID: "rootfs",
+				SrcPath: ".",
+				Mode:    "after",
+				Index:   0,
+			})
+		}},
+		{"bind missing index", func(m *BundleManifest) {
+			m.Tasks[0].Namespace.Binds = append(m.Tasks[0].Namespace.Binds, BindManifest{
+				DstPath: ".",
+				SrcFSID: "rootfs",
+				SrcPath: ".",
+				Mode:    "after",
+				Index:   2,
+			})
+		}},
+		{"fd negative", func(m *BundleManifest) {
+			m.Tasks[0].FDs[0].FD = -1
+		}},
+		{"fd duplicate", func(m *BundleManifest) {
+			m.Tasks[0].FDs = append(m.Tasks[0].FDs, m.Tasks[0].FDs[0])
+		}},
+		{"fd missing path", func(m *BundleManifest) {
+			m.Tasks[0].FDs[0].Path = ""
+		}},
+		{"fd bad path", func(m *BundleManifest) {
+			m.Tasks[0].FDs[0].Path = "../log"
+		}},
+		{"vm missing id", func(m *BundleManifest) {
+			m.VMs[0].ID = ""
+		}},
+		{"vm duplicate id", func(m *BundleManifest) {
+			m.VMs = append(m.VMs, m.VMs[0])
+		}},
+		{"vm missing kind", func(m *BundleManifest) {
+			m.VMs[0].Kind = ""
+		}},
+		{"vm bad state path", func(m *BundleManifest) {
+			m.VMs[0].StatePath = "../vm.state"
+		}},
+		{"worker missing id", func(m *BundleManifest) {
+			m.Workers[0].ID = ""
+		}},
+		{"worker duplicate id", func(m *BundleManifest) {
+			m.Workers = append(m.Workers, m.Workers[0])
+		}},
+		{"worker missing kind", func(m *BundleManifest) {
+			m.Workers[0].Kind = ""
+		}},
+		{"worker bad state path", func(m *BundleManifest) {
+			m.Workers[0].StatePath = "../worker.state"
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := valid()
+			tt.mutate(&manifest)
+			if err := ValidateBundleManifest(manifest); !errors.Is(err, ErrInvalidManifest) {
+				t.Fatalf("ValidateBundleManifest error = %v, want ErrInvalidManifest", err)
+			}
+		})
+	}
+}
+
 func TestBundleManifestFileRejectsInvalidHeader(t *testing.T) {
 	dir := t.TempDir()
 	if err := WriteBundleManifest(dir, BundleManifest{Version: BundleManifestVersion}); !errors.Is(err, ErrInvalidManifest) {

@@ -657,7 +657,7 @@ func TestRestoreBundleRejectsDuplicateFilesystemIDs(t *testing.T) {
 			{ID: "rootfs", Kind: "memfs"},
 		},
 	}), BundleRestoreOptions{})
-	if !errors.Is(err, fs.ErrExist) {
-		t.Fatalf("RestoreBundle duplicate fs error = %v, want ErrExist", err)
+	if !errors.Is(err, migration.ErrInvalidManifest) {
+		t.Fatalf("RestoreBundle duplicate fs error = %v, want ErrInvalidManifest", err)
 	}
 }
