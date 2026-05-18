@@ -344,6 +344,9 @@ func (ns *NS) ExportManifest(taskID string, resolve FSIDResolver) (migration.Nam
 
 	out := migration.NamespaceManifest{TaskID: taskID}
 	for _, dstPath := range paths {
+		if dstPath == "#task/self" {
+			continue
+		}
 		for i, ref := range b[dstPath] {
 			id, err := resolve(ref.fs)
 			if err != nil {

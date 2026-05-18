@@ -223,6 +223,7 @@ func TestTaskFSBundleManifestExportsRestartableRunningTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	SetWorker(task, "worker")
+	Export(task, memfs.New())
 
 	manifest, err := taskfs.BundleManifest(BundleManifestOptions{
 		Resolve: func(fs.FS) (string, error) {
@@ -234,6 +235,9 @@ func TestTaskFSBundleManifestExportsRestartableRunningTask(t *testing.T) {
 	}
 	if len(manifest.Tasks) != 1 || manifest.Tasks[0].State != migration.TaskStateRunning {
 		t.Fatalf("manifest tasks = %#v, want one running task", manifest.Tasks)
+	}
+	if manifest.Tasks[0].ExportFSID != "" {
+		t.Fatalf("running task export fsid = %q, want empty", manifest.Tasks[0].ExportFSID)
 	}
 }
 

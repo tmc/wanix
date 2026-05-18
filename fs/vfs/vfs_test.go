@@ -432,6 +432,34 @@ func TestExportManifestRootAndSystemBinds(t *testing.T) {
 	}
 }
 
+func TestExportManifestSkipsTaskSelfBind(t *testing.T) {
+	root := newManifestFS("root")
+	task := newManifestFS("task")
+
+	ns := New(context.Background())
+	if err := ns.Bind(root, ".", ".", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	if err := ns.Bind(task, ".", "#task/self", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, err := ns.ExportManifest("task1", func(candidate fs.FS) (string, error) {
+		if candidate == root {
+			return "root", nil
+		}
+		return "", migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bind := range manifest.Binds {
+		if bind.DstPath == "#task/self" {
+			t.Fatalf("manifest includes dynamic self bind: %#v", manifest.Binds)
+		}
+	}
+}
+
 func TestExportManifestUnknownFilesystem(t *testing.T) {
 	ns := New(context.Background())
 	if err := ns.Bind(newManifestFS("known"), ".", "mnt", ModeReplace); err != nil {

@@ -472,7 +472,7 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 		errs = append(errs, err)
 	}
 	manifest.Namespace = namespace
-	if export != nil {
+	if export != nil && state != migration.TaskStateRunning {
 		id, err := resolve(export)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("resolve export filesystem for task %s: %w", manifest.ID, err))
