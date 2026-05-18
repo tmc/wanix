@@ -526,6 +526,10 @@ func TestHandleJSBundleManifestWrappers(t *testing.T) {
 			re:   `(?s)async\s+bundleManifest\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?peer\.call\(\s*"BundleManifest"\s*,\s*\[\s*JSON\.stringify\(\s*filesystems\s*\)\s*\]\s*\)`,
 		},
 		{
+			name: "bundle vm states",
+			re:   `(?s)async\s+bundleVMStates\s*\(\s*\).*?peer\.call\(\s*"BundleVMStates"\s*,\s*\[\s*\]\s*\)`,
+		},
+		{
 			name: "restore bundle manifest",
 			re:   `(?s)async\s+restoreBundleManifest\s*\(\s*manifest\s*\).*?typeof\s+manifest\s*!==\s*"string".*?manifest\s*=\s*JSON\.stringify\(\s*normalizeBundleManifest\(\s*manifest\s*\)\s*\).*?peer\.call\(\s*"RestoreBundleManifest"\s*,\s*\[\s*manifest\s*\]\s*\)`,
 		},
@@ -548,11 +552,11 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 	}{
 		{
 			name: "export bundle",
-			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?return\s+\{\s*manifest\s*,\s*archives\s*\}`,
+			re:   `(?s)async\s+exportBundle\s*\(\s*filesystems\s*=\s*\[\]\s*\).*?this\.bundleManifest\(\s*filesystems\s*\).*?this\.bundleVMStates\(\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*request\s*\).*?this\.archive\(\s*source\s*\).*?states\s*=.*?return\s+\{\s*manifest\s*,\s*archives\s*,\s*states\s*\}`,
 		},
 		{
 			name: "import bundle",
-			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?desc\.source\s*=\s*target.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\)`,
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?desc\.source\s*=\s*target.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
 		},
 		{
 			name: "archive data",
@@ -591,6 +595,10 @@ h.bundleManifest = async filesystems => {
 		filesystems: filesystems.map(({archive, ...desc}) => desc),
 	};
 };
+h.bundleVMStates = async () => {
+	calls.push(["bundleVMStates"]);
+	return [{id: "1", kind: "v86", state_path: ".wanix-vmstate-1.bin", data: new Uint8Array([4, 5])}];
+};
 h.archive = async name => {
 	calls.push(["archive", name]);
 	return new Uint8Array([1, 2, 3]);
@@ -599,8 +607,19 @@ h.importArchive = async (name, data) => {
 	calls.push(["importArchive", name, Array.from(data)]);
 	return {entries: 1};
 };
+h.writeFile = async (name, data) => {
+	calls.push(["writeFile", name, Array.from(data)]);
+};
+h.remove = async name => {
+	calls.push(["remove", name]);
+};
 h.restoreBundleManifest = async manifest => {
-	calls.push(["restoreBundleManifest", manifest.version, manifest.filesystems.map(desc => [desc.id, desc.source])]);
+	calls.push([
+		"restoreBundleManifest",
+		manifest.version,
+		manifest.filesystems.map(desc => [desc.id, desc.source]),
+		(manifest.vms || []).map(vm => [vm.id, vm.state_path]),
+	]);
 	return {tasks: []};
 };
 
@@ -612,9 +631,13 @@ const bundle = await h.exportBundle(filesystems);
 if (bundle.archives.length !== 1 || bundle.archives[0].id !== "rootfs") {
 	throw new Error("unexpected archives " + JSON.stringify(bundle.archives));
 }
+if (bundle.states.length !== 1 || bundle.states[0].id !== "1") {
+	throw new Error("unexpected states " + JSON.stringify(bundle.states));
+}
 await h.importBundle({
 	manifest: bundle.manifest,
 	archives: [{id: "rootfs", source: "mnt", data: new ArrayBuffer(2)}],
+	states: bundle.states,
 });
 await h.importBundle({
 	manifest: {
@@ -628,11 +651,14 @@ await h.importBundle({
 const got = JSON.stringify(calls);
 const want = JSON.stringify([
 	["bundleManifest", filesystems],
+	["bundleVMStates"],
 	["archive", "mnt"],
 	["importArchive", "mnt", [0, 0]],
-	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["taskfs", "#task"]]],
+	["writeFile", ".wanix-vmstate-1.bin", [4, 5]],
+	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"], ["taskfs", "#task"]], [["1", ".wanix-vmstate-1.bin"]]],
+	["remove", ".wanix-vmstate-1.bin"],
 	["importArchive", "exports/2", [7]],
-	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]]],
+	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]], []],
 ]);
 if (got !== want) {
 	throw new Error("calls = " + got + ", want " + want);

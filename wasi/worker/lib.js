@@ -8460,6 +8460,10 @@ var WanixHandle2 = class {
     this.logger(`bundleManifest filesystems(${filesystems.length})`);
     return (await this.peer.call("BundleManifest", [JSON.stringify(filesystems)])).value;
   }
+  async bundleVMStates() {
+    this.logger(`bundleVMStates`);
+    return (await this.peer.call("BundleVMStates", [])).value || [];
+  }
   async restoreBundleManifest(manifest) {
     this.logger(`restoreBundleManifest`);
     if (typeof manifest !== "string") {
@@ -8470,6 +8474,10 @@ var WanixHandle2 = class {
   async exportBundle(filesystems = []) {
     this.logger(`exportBundle filesystems(${filesystems.length})`);
     const manifest = await this.bundleManifest(filesystems);
+    const vmStates = await this.bundleVMStates();
+    if (vmStates.length) {
+      manifest.vms = vmStates.map(({ data, ...vm }) => vm);
+    }
     const requests = new Map(filesystems.map((desc) => [desc.id, desc]));
     const archives = [];
     for (const desc of manifest.filesystems || []) {
@@ -8492,7 +8500,12 @@ var WanixHandle2 = class {
       }
       archives.push(archive);
     }
-    return { manifest, archives };
+    const states = vmStates.filter((state) => state.state_path && state.data).map((state) => ({
+      id: state.id,
+      path: state.state_path,
+      data: state.data
+    }));
+    return { manifest, archives, states };
   }
   async importBundle(bundle) {
     this.logger(`importBundle`);
@@ -8516,7 +8529,29 @@ var WanixHandle2 = class {
       }
       await this.importArchive(target3, bundleArchiveData(archive.data));
     }
-    return await this.restoreBundleManifest(manifest);
+    const cleanup = [];
+    try {
+      for (const state of bundle.states || []) {
+        const target3 = state.path || state.state_path;
+        if (!target3) {
+          throw new Error(`importBundle: VM state ${state.id || ""} missing path`);
+        }
+        const vm = (manifest.vms || []).find((vm2) => vm2.id === state.id);
+        if (vm && vm.state_path !== target3) {
+          vm.state_path = target3;
+        }
+        await this.writeFile(target3, bundleStateData(state.data));
+        cleanup.push(target3);
+      }
+      return await this.restoreBundleManifest(manifest);
+    } finally {
+      for (const target3 of cleanup.reverse()) {
+        try {
+          await this.remove(target3);
+        } catch {
+        }
+      }
+    }
   }
   async rename(oldname, newname) {
     this.logger(`rename ${oldname} ${newname}`);
@@ -8679,6 +8714,9 @@ function bundleArchiveData(data) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
   return data;
+}
+function bundleStateData(data) {
+  return bundleArchiveData(data);
 }
 function normalizeBundleFilesystem(desc) {
   if (typeof desc === "string") {
