@@ -16,6 +16,7 @@ const defaultPages = [
 	"test/html/bundle-bindgraph-restore.html",
 	"test/html/bundle-cowfs-restore.html",
 	"test/html/bundle-running-task-restore.html",
+	"test/html/bundle-fd-restore.html",
 	"test/html/bundle-service-worker-restore.html",
 	"test/html/bundle-composite-restore.html",
 	"test/html/bundle-v86-state-restore.html",
