@@ -17,34 +17,72 @@ import {
 const TASKNS = "#task";
 
 self.onmessage = async (e) => {
-    if (e.data.worker) {
+    const message = e.data || {};
+    if (message.worker) {
         console.log("wasi worker started");
-        await initializeSyncWorker(e);
-    } else if (e.data.buffer) {
+        await initializeSyncWorker(message);
+    } else if (message.buffer) {
         console.log("wasi sync worker started");
-		await runWasi(e);
+		await runWasi(message);
+    } else if (message.type === "wanix-checkpoint" && message.op === "save-state") {
+        await saveCheckpoint(message);
 	}
 }
 
-async function initializeSyncWorker(e) {
-    const fs = new WanixHandle(e.data.worker.port);
-    const tid = e.data.worker.tid;
+async function initializeSyncWorker(message) {
+    const fs = new WanixHandle(message.worker.port);
+    globalThis.worker = message.worker;
+    if (message.worker.checkpoint_state) {
+        globalThis.checkpoint_state = message.worker.checkpoint_state;
+    }
+    const tid = message.worker.tid;
     const env = (await fs.readText(`${TASKNS}/${tid}/env`)).trim().split("\n").filter(line => line.includes("="));
     const args = (await fs.readText(`${TASKNS}/${tid}/cmd`)).trim().split(" ");
     const bin = await fs.readFile(args[0]);
     const buffer = new SharedArrayBuffer(16384);
     const call = new CallBuffer(buffer);
-    const worker = new Worker(e.data.worker.url, {type: "module"});
+    const worker = new Worker(message.worker.url, {type: "module"});
     worker.onmessage = messageHandler(fs, call, tid); 
     worker.postMessage({
         buffer, 
         bin,
         args,
         env,
+		checkpoint_state: message.worker.checkpoint_state,
 		stdin: `${TASKNS}/${tid}/fd/0`,
 		stdout: `${TASKNS}/${tid}/fd/1`,
 		stderr: `${TASKNS}/${tid}/fd/2`,
     });
+}
+
+async function saveCheckpoint(message) {
+    if (typeof globalThis.wanixCheckpointState !== "function") {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: false,
+            error: "migration unsupported",
+        });
+        return;
+    }
+    try {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: true,
+            state: await globalThis.wanixCheckpointState(message),
+        });
+    } catch (error) {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: false,
+            error: String(error && error.message || error),
+        });
+    }
 }
 
 function messageHandler(fs, call, tid) {
@@ -125,9 +163,12 @@ function messageHandler(fs, call, tid) {
 }
 
 
-async function runWasi(e) {
-	const caller = new CallBuffer(e.data.buffer);
-	const wasi = new WASI(e.data.args, e.data.env, [
+async function runWasi(message) {
+    if (message.checkpoint_state) {
+        globalThis.checkpoint_state = message.checkpoint_state;
+    }
+	const caller = new CallBuffer(message.buffer);
+	const wasi = new WASI(message.args, message.env, [
 		new OpenEmptyFile(),
 		// new OpenFile(new File(new FileHandle(caller, e.data.stdin))),
 		new OpenFile(new File(new FileHandle(caller, e.data.stdout))),
@@ -168,9 +209,9 @@ async function runWasi(e) {
 		"wasi_snapshot_preview1": wrapped,
 	});
 
-    const wasm = await WebAssembly.compile(e.data.bin);
+    const wasm = await WebAssembly.compile(message.bin);
 	const inst = await WebAssembly.instantiate(wasm, imports);
-    const wasmString = new TextDecoder('utf-8', { ignoreBOM: true, fatal: false }).decode(e.data.bin);
+    const wasmString = new TextDecoder('utf-8', { ignoreBOM: true, fatal: false }).decode(message.bin);
     let code = 0;
 	let start = performance.now();
 	// split so we don't trigger the tinygo check itself by being in the embedded source

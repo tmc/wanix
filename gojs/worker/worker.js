@@ -5,16 +5,24 @@ import {
 const TASKNS = "#task";
 
 self.addEventListener("message", async (e) => {
-    if (!e.data.worker) return;
+    const message = e.data || {};
+    if (message.type === "wanix-checkpoint" && message.op === "save-state") {
+        await saveCheckpoint(message);
+        return;
+    }
+    if (!message.worker) return;
 
     console.log("gojs worker started");
-    const fs = new WanixHandle(e.data.worker.port);
-    globalThis.worker = e.data.worker;
+    const fs = new WanixHandle(message.worker.port);
+    globalThis.worker = message.worker;
     globalThis.sys = fs; // deprecated
-    if (e.data.worker.initial_state) {
-        globalThis.initial_state = e.data.worker.initial_state;
+    if (message.worker.initial_state) {
+        globalThis.initial_state = message.worker.initial_state;
     }
-    const tid = e.data.worker.tid;
+    if (message.worker.checkpoint_state) {
+        globalThis.checkpoint_state = message.worker.checkpoint_state;
+    }
+    const tid = message.worker.tid;
     const env = (await fs.readText(`${TASKNS}/${tid}/env`)).trim().split("\n");
     const args = (await fs.readText(`${TASKNS}/${tid}/cmd`)).trim().split(" ");
     globalThis.cwd = (await fs.readText(`${TASKNS}/${tid}/dir`)).trim() || "/";
@@ -36,6 +44,36 @@ self.addEventListener("message", async (e) => {
     const end = performance.now();
     console.log(`gojs execution took ${end - start}ms`);
 });
+
+async function saveCheckpoint(message) {
+    if (typeof globalThis.wanixCheckpointState !== "function") {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: false,
+            error: "migration unsupported",
+        });
+        return;
+    }
+    try {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: true,
+            state: await globalThis.wanixCheckpointState(message),
+        });
+    } catch (error) {
+        self.postMessage({
+            type: "wanix-checkpoint",
+            op: "save-state",
+            id: message.id,
+            ok: false,
+            error: String(error && error.message || error),
+        });
+    }
+}
 
 function log(...args) {
     // console.log(...args);
