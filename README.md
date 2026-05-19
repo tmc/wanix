@@ -15,6 +15,7 @@ A virtual environment toolkit for the web, inspired by Plan 9.
 * Abstract POSIX process model for generalized compute execution
 * Per-process namespaces for security, isolation, and custom environments
 * Built-in emulator for x86 support and Linux compatibility
+* Bundle migration for filesystem material, manifests, VM state, and cooperative task checkpoints
 
 ## Try online demo
 
@@ -49,6 +50,9 @@ Wanix has a number of built-in file services:
 ### API Reference
 
 For now, see [api/](api/) and [api/handle.js](api/handle.js).
+
+For bundle migration, see [docs/bundle-migration.md](docs/bundle-migration.md)
+and [examples/bundle-checkpoint.html](examples/bundle-checkpoint.html).
 
 ## Contributing
 
