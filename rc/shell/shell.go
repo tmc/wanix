@@ -3,6 +3,7 @@ package shell
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,10 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
+	"tractor.dev/wanix/checkpoint"
 )
 
 // Main runs the rc shell and returns its process exit code.
@@ -32,13 +35,25 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	env := expand.ListEnviron(os.Environ()...)
+	rcState := newCheckpointState(wd, exportedEnvPairs(env))
+	if *command == "" && flags.NArg() == 0 {
+		if err := checkpoint.Register(checkpoint.Handler{
+			Load: rcState.load,
+			Save: rcState.save,
+		}); err != nil && !errors.Is(err, checkpoint.ErrUnsupported) {
+			fatalf(stderr, "rc: %v\n", err)
+			return 1
+		}
+		wd = rcState.dir()
+		env = expand.ListEnviron(rcState.env()...)
+	}
 
 	runner, err := interp.New(
 		interp.Dir(wd),
 		interp.Env(env),
 		interp.StdIO(stdin, stdout, stderr),
 		interp.Interactive(*command == "" && flags.NArg() == 0),
-		interp.CallHandler(helpCallHandler()),
+		interp.CallHandler(rcCallHandler(rcState)),
 		interp.ExecHandlers(urootCoreutilsMiddleware()),
 		interp.ExecHandlers(wanixExecMiddleware()),
 	)
@@ -67,16 +82,17 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return exitCodeForErr(stderr, err)
 		}
 	default:
-		if err := runREPL(ctx, runner, parser, stdin, stderr); err != nil {
+		if err := runREPL(ctx, runner, parser, stdin, stderr, rcState); err != nil {
 			return exitCodeForErr(stderr, err)
 		}
 	}
 	return 0
 }
 
-func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin io.Reader, stderr io.Writer) error {
+func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin io.Reader, stderr io.Writer, state *checkpointState) error {
 	scanner := bufio.NewScanner(stdin)
 	for {
+		state.setPrompt(r.Dir)
 		fmt.Fprint(stderr, "rc% ")
 		if !scanner.Scan() {
 			if err := scanner.Err(); err != nil {
@@ -88,14 +104,17 @@ func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		state.setRunning(r.Dir)
 		if err := runSource(ctx, r, parser, "<stdin>", strings.NewReader(line+"\n")); err != nil {
 			var status interp.ExitStatus
 			if errors.As(err, &status) {
+				state.setStatus(r.Dir, int(status))
 				fmt.Fprintf(stderr, "exit status %d\n", status)
 				continue
 			}
 			return err
 		}
+		state.setStatus(r.Dir, 0)
 		if r.Exited() {
 			return nil
 		}
@@ -228,8 +247,9 @@ func printHelp(hc interp.HandlerContext) {
 	fmt.Fprintln(hc.Stdout, "External commands: resolved via PATH lookup")
 }
 
-func helpCallHandler() interp.CallHandlerFunc {
+func rcCallHandler(state *checkpointState) interp.CallHandlerFunc {
 	return func(ctx context.Context, args []string) ([]string, error) {
+		state.recordCall(args)
 		if len(args) > 0 && args[0] == "help" {
 			if len(args) > 2 {
 				return nil, fmt.Errorf("help: usage: help [command-or-builtin]")
@@ -241,6 +261,135 @@ func helpCallHandler() interp.CallHandlerFunc {
 			return []string{":"}, nil
 		}
 		return args, nil
+	}
+}
+
+type checkpointState struct {
+	mu            sync.Mutex
+	atPrompt      bool
+	checkpointDir string
+	checkpointEnv []string
+}
+
+type rcCheckpoint struct {
+	Version int      `json:"version"`
+	Dir     string   `json:"dir"`
+	Env     []string `json:"env"`
+}
+
+func newCheckpointState(checkpointDir string, checkpointEnv []string) *checkpointState {
+	return &checkpointState{
+		atPrompt:      true,
+		checkpointDir: checkpointDir,
+		checkpointEnv: append([]string(nil), checkpointEnv...),
+	}
+}
+
+func (s *checkpointState) dir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checkpointDir
+}
+
+func (s *checkpointState) env() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.checkpointEnv...)
+}
+
+func (s *checkpointState) load(data []byte) error {
+	var saved rcCheckpoint
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return err
+	}
+	if saved.Version != 1 {
+		return fmt.Errorf("unsupported rc checkpoint version %d", saved.Version)
+	}
+	if saved.Dir == "" {
+		return fmt.Errorf("missing rc checkpoint directory")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointDir = saved.Dir
+	s.checkpointEnv = append(s.checkpointEnv[:0], saved.Env...)
+	s.atPrompt = true
+	return nil
+}
+
+func (s *checkpointState) save() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.atPrompt {
+		return nil, checkpoint.ErrUnsupported
+	}
+	return json.Marshal(rcCheckpoint{
+		Version: 1,
+		Dir:     s.checkpointDir,
+		Env:     append([]string(nil), s.checkpointEnv...),
+	})
+}
+
+func (s *checkpointState) setPrompt(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointDir = dir
+	s.atPrompt = true
+}
+
+func (s *checkpointState) setRunning(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointDir = dir
+	s.atPrompt = false
+}
+
+func (s *checkpointState) setStatus(dir string, status int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointDir = dir
+	s.atPrompt = true
+}
+
+func (s *checkpointState) recordCall(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch args[0] {
+	case "export":
+		for _, arg := range args[1:] {
+			name, value, ok := strings.Cut(arg, "=")
+			if !ok || name == "" {
+				continue
+			}
+			s.setEnvLocked(name, value)
+		}
+	case "unset":
+		for _, name := range args[1:] {
+			s.unsetEnvLocked(name)
+		}
+	}
+}
+
+func (s *checkpointState) setEnvLocked(name, value string) {
+	prefix := name + "="
+	for i, pair := range s.checkpointEnv {
+		if strings.HasPrefix(pair, prefix) {
+			s.checkpointEnv[i] = prefix + value
+			return
+		}
+	}
+	s.checkpointEnv = append(s.checkpointEnv, prefix+value)
+}
+
+func (s *checkpointState) unsetEnvLocked(name string) {
+	prefix := name + "="
+	for i, pair := range s.checkpointEnv {
+		if strings.HasPrefix(pair, prefix) {
+			s.checkpointEnv = append(s.checkpointEnv[:i], s.checkpointEnv[i+1:]...)
+			return
+		}
 	}
 }
 
