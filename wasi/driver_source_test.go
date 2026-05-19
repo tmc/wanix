@@ -42,24 +42,32 @@ func TestWorkerSupportsCheckpointMessages(t *testing.T) {
 		re   string
 	}{
 		{
+			name: "checkpoint helper import",
+			re:   `(?s)import\s+\{.*?isWanixCheckpointSaveState.*?postWanixCheckpointSaveState.*?wanixCheckpointStateFromWorker.*?\}\s+from\s+"\.\/lib\.js"`,
+		},
+		{
 			name: "checkpoint message handler",
-			re:   `(?s)message\.type\s*===\s*"wanix-checkpoint".*?message\.op\s*===\s*"save-state".*?saveCheckpoint\(\s*message\s*\)`,
+			re:   `(?s)isWanixCheckpointSaveState\(\s*message\s*\).*?postWanixCheckpointSaveState\(\s*message\s*\)`,
 		},
 		{
 			name: "checkpoint state exposure",
-			re:   `(?s)message\.worker\.checkpoint_state.*?globalThis\.checkpoint_state\s*=\s*message\.worker\.checkpoint_state`,
+			re:   `(?s)wanixCheckpointStateFromWorker\(\s*message\.worker\s*\).*?globalThis\.checkpoint_state\s*=\s*checkpointState`,
 		},
 		{
 			name: "child worker checkpoint state",
 			re:   `(?s)worker\.postMessage\(\s*\{.*?checkpoint_state:\s*message\.worker\.checkpoint_state`,
 		},
-		{
-			name: "unsupported fail closed",
-			re:   `(?s)typeof\s+globalThis\.wanixCheckpointState\s*!==\s*"function".*?ok:\s*false.*?error:\s*"migration unsupported"`,
-		},
 	} {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
 			t.Fatalf("worker.js missing %s", tt.name)
 		}
+	}
+
+	helper, err := os.ReadFile("../api/checkpoint.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?s)typeof\s+save\s*!==\s*"function".*?ok:\s*false.*?error:\s*"migration unsupported"`).Match(helper) {
+		t.Fatalf("checkpoint helper missing unsupported fail-closed response")
 	}
 }

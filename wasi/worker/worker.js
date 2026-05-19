@@ -1,5 +1,8 @@
 import { 
     WanixHandle,
+	isWanixCheckpointSaveState,
+	postWanixCheckpointSaveState,
+	wanixCheckpointStateFromWorker,
 	CallBuffer, 
 	WASI, 
     WASIProcExit,
@@ -24,16 +27,17 @@ self.onmessage = async (e) => {
     } else if (message.buffer) {
         console.log("wasi sync worker started");
 		await runWasi(message);
-    } else if (message.type === "wanix-checkpoint" && message.op === "save-state") {
-        await saveCheckpoint(message);
+    } else if (isWanixCheckpointSaveState(message)) {
+        await postWanixCheckpointSaveState(message);
 	}
 }
 
 async function initializeSyncWorker(message) {
     const fs = new WanixHandle(message.worker.port);
     globalThis.worker = message.worker;
-    if (message.worker.checkpoint_state) {
-        globalThis.checkpoint_state = message.worker.checkpoint_state;
+    const checkpointState = wanixCheckpointStateFromWorker(message.worker);
+    if (checkpointState) {
+        globalThis.checkpoint_state = checkpointState;
     }
     const tid = message.worker.tid;
     const env = (await fs.readText(`${TASKNS}/${tid}/env`)).trim().split("\n").filter(line => line.includes("="));
@@ -53,36 +57,6 @@ async function initializeSyncWorker(message) {
 		stdout: `${TASKNS}/${tid}/fd/1`,
 		stderr: `${TASKNS}/${tid}/fd/2`,
     });
-}
-
-async function saveCheckpoint(message) {
-    if (typeof globalThis.wanixCheckpointState !== "function") {
-        self.postMessage({
-            type: "wanix-checkpoint",
-            op: "save-state",
-            id: message.id,
-            ok: false,
-            error: "migration unsupported",
-        });
-        return;
-    }
-    try {
-        self.postMessage({
-            type: "wanix-checkpoint",
-            op: "save-state",
-            id: message.id,
-            ok: true,
-            state: await globalThis.wanixCheckpointState(message),
-        });
-    } catch (error) {
-        self.postMessage({
-            type: "wanix-checkpoint",
-            op: "save-state",
-            id: message.id,
-            ok: false,
-            error: String(error && error.message || error),
-        });
-    }
 }
 
 function messageHandler(fs, call, tid) {

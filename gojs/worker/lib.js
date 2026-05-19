@@ -4417,6 +4417,94 @@ if (!ReadableStream.prototype[Symbol.asyncIterator]) {
     }
   };
 }
+
+// api/checkpoint.js
+var WanixCheckpointProtocol = Object.freeze({
+  version: 1,
+  type: "wanix-checkpoint",
+  saveStateOp: "save-state"
+});
+function isWanixCheckpointSaveState(message) {
+  return !!message && message.type === WanixCheckpointProtocol.type && message.op === WanixCheckpointProtocol.saveStateOp && (message.version === void 0 || message.version === WanixCheckpointProtocol.version);
+}
+function wanixCheckpointResponse(message, fields) {
+  return {
+    type: WanixCheckpointProtocol.type,
+    op: WanixCheckpointProtocol.saveStateOp,
+    version: WanixCheckpointProtocol.version,
+    id: message && message.id || "",
+    ...fields
+  };
+}
+async function wanixCheckpointSaveStateResponse(message, save) {
+  if (typeof save !== "function") {
+    return wanixCheckpointResponse(message, {
+      ok: false,
+      error: "migration unsupported"
+    });
+  }
+  try {
+    return wanixCheckpointResponse(message, {
+      ok: true,
+      state: await save(message)
+    });
+  } catch (error) {
+    return wanixCheckpointResponse(message, {
+      ok: false,
+      error: String(error && error.message || error)
+    });
+  }
+}
+async function postWanixCheckpointSaveState(message, options = {}) {
+  const target2 = options.target || globalThis;
+  const save = options.save || globalThis.wanixCheckpointState;
+  target2.postMessage(await wanixCheckpointSaveStateResponse(message, save));
+}
+function wanixCheckpointStateFromWorker(worker) {
+  return worker && worker.checkpoint_state || null;
+}
+function installWanixCheckpoint(options = {}) {
+  const target2 = options.target || globalThis;
+  const load = options.load;
+  target2.addEventListener("message", async (event) => {
+    const message = event.data || {};
+    if (message.worker) {
+      globalThis.wanixWorker = message.worker;
+      const state = wanixCheckpointStateFromWorker(message.worker);
+      if (state && typeof load === "function") {
+        await load(state, message.worker);
+      }
+      return;
+    }
+    if (!isWanixCheckpointSaveState(message)) {
+      return;
+    }
+    await postWanixCheckpointSaveState(message, {
+      target: target2,
+      save: options.save || globalThis.wanixCheckpointState
+    });
+  });
+}
+var WanixCheckpoint = Object.freeze({
+  protocol: WanixCheckpointProtocol,
+  isSaveStateMessage: isWanixCheckpointSaveState,
+  response: wanixCheckpointResponse,
+  saveStateResponse: wanixCheckpointSaveStateResponse,
+  postSaveState: postWanixCheckpointSaveState,
+  stateFromWorker: wanixCheckpointStateFromWorker,
+  install: installWanixCheckpoint
+});
+if (typeof globalThis !== "undefined" && !globalThis.WanixCheckpoint) {
+  globalThis.WanixCheckpoint = WanixCheckpoint;
+}
 export {
-  WanixHandle
+  WanixCheckpoint,
+  WanixCheckpointProtocol,
+  WanixHandle,
+  installWanixCheckpoint,
+  isWanixCheckpointSaveState,
+  postWanixCheckpointSaveState,
+  wanixCheckpointResponse,
+  wanixCheckpointSaveStateResponse,
+  wanixCheckpointStateFromWorker
 };
