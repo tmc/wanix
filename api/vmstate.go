@@ -5,23 +5,8 @@ import (
 
 	"tractor.dev/toolkit-go/duplex/rpc"
 	"tractor.dev/wanix"
+	"tractor.dev/wanix/migration"
 )
-
-type bundleVMState struct {
-	ID        string            `json:"id"`
-	Kind      string            `json:"kind,omitempty"`
-	StatePath string            `json:"state_path,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-}
-
-type bundleTaskState struct {
-	ID        string            `json:"id"`
-	Kind      string            `json:"kind,omitempty"`
-	StatePath string            `json:"state_path,omitempty"`
-	Labels    map[string]string `json:"labels,omitempty"`
-	Data      []byte            `json:"data,omitempty"`
-}
 
 func (s *syscaller) bundleVMStates(r rpc.Responder, c *rpc.Call) {
 	var args []any
@@ -45,14 +30,6 @@ func (s *syscaller) bundleTaskStates(r rpc.Responder, c *rpc.Call) {
 		return
 	}
 	r.Return(states)
-}
-
-func vmStatePath(id string) string {
-	return ".wanix-vmstate-" + id + ".bin"
-}
-
-func taskStatePath(id string) string {
-	return ".wanix-taskstate-" + id + ".bin"
 }
 
 func taskVMID(t *wanix.Task) string {
@@ -81,10 +58,10 @@ func cutEnv(line string) (key, value string, ok bool) {
 	return "", "", false
 }
 
-func collectBundleVMStates(root *wanix.Task, ctx context.Context) ([]bundleVMState, error) {
+func collectBundleVMStates(root *wanix.Task, ctx context.Context) ([]migration.VMStatePayload, error) {
 	return collectBundleVMStatesPlatform(root, ctx)
 }
 
-func collectBundleTaskStates(root *wanix.Task, ctx context.Context) ([]bundleTaskState, error) {
+func collectBundleTaskStates(root *wanix.Task, ctx context.Context) ([]migration.TaskStatePayload, error) {
 	return collectBundleTaskStatesPlatform(root, ctx)
 }

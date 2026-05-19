@@ -17,14 +17,14 @@ import (
 	"tractor.dev/wanix/vm"
 )
 
-func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]bundleVMState, error) {
+func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]migration.VMStatePayload, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	var out []bundleVMState
+	var out []migration.VMStatePayload
 	seen := make(map[string]bool)
 	for _, task := range root.Tasks() {
 		vmID := taskVMID(task)
@@ -36,7 +36,7 @@ func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]bun
 		if err != nil {
 			return nil, err
 		}
-		state := bundleVMState{
+		state := migration.VMStatePayload{
 			ID:   v.ID(),
 			Kind: v.Kind(),
 		}
@@ -48,7 +48,7 @@ func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]bun
 			if err != nil {
 				return nil, fmt.Errorf("bundle vm %s state: %w", vmID, err)
 			}
-			state.StatePath = vmStatePath(vmID)
+			state.StatePath = migration.VMStatePath(vmID)
 			state.Data = data
 		}
 		out = append(out, state)
@@ -59,14 +59,14 @@ func collectBundleVMStatesPlatform(root *wanix.Task, ctx context.Context) ([]bun
 	return out, nil
 }
 
-func collectBundleTaskStatesPlatform(root *wanix.Task, ctx context.Context) ([]bundleTaskState, error) {
+func collectBundleTaskStatesPlatform(root *wanix.Task, ctx context.Context) ([]migration.TaskStatePayload, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	var out []bundleTaskState
+	var out []migration.TaskStatePayload
 	for _, task := range root.Tasks() {
 		if taskVMID(task) != "" || wanix.GetWorker(task) == nil {
 			continue
@@ -80,9 +80,9 @@ func collectBundleTaskStatesPlatform(root *wanix.Task, ctx context.Context) ([]b
 			}
 			return nil, fmt.Errorf("bundle task %s state: %w", task.ID(), err)
 		}
-		out = append(out, bundleTaskState{
+		out = append(out, migration.TaskStatePayload{
 			ID:        task.ID(),
-			StatePath: taskStatePath(task.ID()),
+			StatePath: migration.TaskStatePath(task.ID()),
 			Data:      data,
 		})
 	}

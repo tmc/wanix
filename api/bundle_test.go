@@ -178,7 +178,7 @@ func TestBundleTaskStatesRPCBoundary(t *testing.T) {
 	root, _ := newBundleAPIRoot(t)
 	client := newBundleAPIClient(t, root)
 
-	var states []bundleTaskState
+	var states []migration.TaskStatePayload
 	if _, err := client.Call(context.Background(), "BundleTaskStates", []any{}, &states); err != nil {
 		t.Fatal(err)
 	}
