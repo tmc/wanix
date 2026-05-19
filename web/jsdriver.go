@@ -31,12 +31,76 @@ func (d *JSDriver) start(t *wanix.Task, state []byte) error {
 	if err != nil {
 		return err
 	}
-	jsBuf := js.Global().Get("Uint8Array").New(len(data))
-	js.CopyBytesToJS(jsBuf, data)
+	src := append([]byte(jsCheckpointRuntime), data...)
+	jsBuf := js.Global().Get("Uint8Array").New(len(src))
+	js.CopyBytesToJS(jsBuf, src)
 	blob := js.Global().Get("Blob").New([]any{jsBuf}, js.ValueOf(map[string]any{"type": "text/javascript"}))
 	url := js.Global().Get("URL").Call("createObjectURL", blob)
 	return worker.StartTaskWorkerWithState(d.Workers, t, url.String(), state)
 }
+
+// jsCheckpointRuntime mirrors api/checkpoint.js for generic JS task blobs, which
+// cannot import the page bundle directly.
+const jsCheckpointRuntime = `
+globalThis.WanixCheckpoint = globalThis.WanixCheckpoint || (() => {
+	const protocol = Object.freeze({version: 1, type: "wanix-checkpoint", saveStateOp: "save-state"});
+	function isSaveStateMessage(message) {
+		return !!message &&
+			message.type === protocol.type &&
+			message.op === protocol.saveStateOp &&
+			(message.version === undefined || message.version === protocol.version);
+	}
+	function response(message, fields) {
+		return Object.assign({
+			type: protocol.type,
+			op: protocol.saveStateOp,
+			version: protocol.version,
+			id: message && message.id || "",
+		}, fields);
+	}
+	async function saveStateResponse(message, save) {
+		if (typeof save !== "function") {
+			return response(message, {ok: false, error: "migration unsupported"});
+		}
+		try {
+			return response(message, {ok: true, state: await save(message)});
+		} catch (error) {
+			return response(message, {ok: false, error: String(error && error.message || error)});
+		}
+	}
+	async function postSaveState(message, options = {}) {
+		const target = options.target || globalThis;
+		const save = options.save || globalThis.wanixCheckpointState;
+		target.postMessage(await saveStateResponse(message, save));
+	}
+	function stateFromWorker(worker) {
+		return worker && worker.checkpoint_state || null;
+	}
+	function install(options = {}) {
+		const target = options.target || globalThis;
+		const load = options.load;
+		target.addEventListener("message", async event => {
+			const message = event.data || {};
+			if (message.worker) {
+				globalThis.wanixWorker = message.worker;
+				const state = stateFromWorker(message.worker);
+				if (state && typeof load === "function") {
+					await load(state, message.worker);
+				}
+				return;
+			}
+			if (!isSaveStateMessage(message)) {
+				return;
+			}
+			await postSaveState(message, {
+				target,
+				save: options.save || globalThis.wanixCheckpointState,
+			});
+		});
+	}
+	return {protocol, isSaveStateMessage, response, saveStateResponse, postSaveState, stateFromWorker, install};
+})();
+`
 
 func (d *JSDriver) RestoreTask(t *wanix.Task, manifest migration.TaskManifest) error {
 	var state []byte
