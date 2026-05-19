@@ -55,9 +55,45 @@ globalThis.WanixCheckpoint.install({
 });
 ```
 
+Go WebAssembly programs should use the Go checkpoint helper instead of handling
+worker messages directly:
+
+```go
+package main
+
+import "tractor.dev/wanix/checkpoint"
+
+func main() {
+	var state []byte
+	checkpoint.Register(checkpoint.Handler{
+		Load: func(data []byte) error {
+			state = append(state[:0], data...)
+			return nil
+		},
+		Save: func() ([]byte, error) {
+			return append([]byte(nil), state...), nil
+		},
+	})
+
+	// Run the program.
+}
+```
+
+The helper is cooperative. A program returns `checkpoint.ErrUnsupported` when it
+is not at a checkpoint boundary, so bundle export fails closed instead of
+recording partial runtime state.
+
 See [../examples/bundle-checkpoint.html](../examples/bundle-checkpoint.html) for
 a complete browser example that exports a source system and imports it into a
 target system.
+
+## rc checkpoints
+
+The `rc` shell checkpoints only prompt-boundary state: current directory,
+exported environment, and the last command status. It does not checkpoint a
+foreground command, pipeline, partial input line, terminal buffer, background
+job, or arbitrary Go runtime state. While a command is running, `rc` reports
+`checkpoint.ErrUnsupported`, causing bundle export to fail closed.
 
 ## Unsupported running tasks
 
