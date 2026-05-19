@@ -89,11 +89,12 @@ target system.
 
 ## rc checkpoints
 
-The `rc` shell checkpoints only prompt-boundary state: current directory and
-exported environment. It does not checkpoint command history, a foreground
-command, pipeline, partial input line, terminal buffer, background job, or
-arbitrary Go runtime state. While a command is running, `rc` reports
-`checkpoint.ErrUnsupported`, causing bundle export to fail closed.
+The `rc` shell checkpoints only prompt-boundary state: current directory,
+exported environment, and the in-process command history shown by `history`. It
+does not checkpoint terminal scrollback, a foreground command, pipeline, partial
+input line, terminal buffer, background job, or arbitrary Go runtime state.
+While a command is running, `rc` reports `checkpoint.ErrUnsupported`, causing
+bundle export to fail closed.
 
 ## Unsupported running tasks
 

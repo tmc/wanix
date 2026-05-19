@@ -10,6 +10,8 @@ import (
 
 func TestCheckpointStateSavesPromptBoundary(t *testing.T) {
 	state := newCheckpointState("/home", []string{"PATH=/bin"})
+	state.addHistory("cd /tmp")
+	state.addHistory("export USER=glenda")
 	state.recordCall([]string{"export", "USER=glenda"})
 	state.recordCall([]string{"unset", "PATH"})
 	state.setStatus("/tmp", 7)
@@ -29,6 +31,9 @@ func TestCheckpointStateSavesPromptBoundary(t *testing.T) {
 	if got, want := saved.Env, []string{"USER=glenda"}; !equalStrings(got, want) {
 		t.Fatalf("env = %#v, want %#v", got, want)
 	}
+	if got, want := saved.History, []string{"cd /tmp", "export USER=glenda"}; !equalStrings(got, want) {
+		t.Fatalf("history = %#v, want %#v", got, want)
+	}
 }
 
 func TestCheckpointStateFailsWhileRunning(t *testing.T) {
@@ -46,6 +51,7 @@ func TestCheckpointStateLoads(t *testing.T) {
 		Version: 1,
 		Dir:     "/mnt",
 		Env:     []string{"A=B"},
+		History: []string{"pwd", "history"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +66,19 @@ func TestCheckpointStateLoads(t *testing.T) {
 	}
 	if got, want := state.env(), []string{"A=B"}; !equalStrings(got, want) {
 		t.Fatalf("env = %#v, want %#v", got, want)
+	}
+	if got, want := state.history(), []string{"pwd", "history"}; !equalStrings(got, want) {
+		t.Fatalf("history = %#v, want %#v", got, want)
+	}
+}
+
+func TestCheckpointStateTrimsHistory(t *testing.T) {
+	state := newCheckpointState("/", nil)
+	for i := 0; i < maxCheckpointHistory+5; i++ {
+		state.addHistory("pwd")
+	}
+	if got := len(state.history()); got != maxCheckpointHistory {
+		t.Fatalf("history length = %d, want %d", got, maxCheckpointHistory)
 	}
 }
 

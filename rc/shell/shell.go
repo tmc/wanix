@@ -104,6 +104,7 @@ func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		state.addHistory(line)
 		state.setRunning(r.Dir)
 		if err := runSource(ctx, r, parser, "<stdin>", strings.NewReader(line+"\n")); err != nil {
 			var status interp.ExitStatus
@@ -233,7 +234,7 @@ func exportedEnvPairs(env expand.Environ) []string {
 }
 
 func printHelp(hc interp.HandlerContext) {
-	builtins := []string{"help", "cd", "pwd", "echo", "exit", "export", "unset", "type", ":", "true", "false"}
+	builtins := []string{"help", "history", "cd", "pwd", "echo", "exit", "export", "unset", "type", ":", "true", "false"}
 	embedded := bundledCommandNames()
 
 	fmt.Fprintln(hc.Stdout, "rc help")
@@ -260,21 +261,38 @@ func rcCallHandler(state *checkpointState) interp.CallHandlerFunc {
 			printHelp(interp.HandlerCtx(ctx))
 			return []string{":"}, nil
 		}
+		if len(args) > 0 && args[0] == "history" {
+			if len(args) > 1 {
+				return nil, fmt.Errorf("history: usage: history")
+			}
+			printHistory(interp.HandlerCtx(ctx), state.history())
+			return []string{":"}, nil
+		}
 		return args, nil
 	}
 }
+
+func printHistory(hc interp.HandlerContext, history []string) {
+	for i, line := range history {
+		fmt.Fprintf(hc.Stdout, "%d\t%s\n", i+1, line)
+	}
+}
+
+const maxCheckpointHistory = 100
 
 type checkpointState struct {
 	mu            sync.Mutex
 	atPrompt      bool
 	checkpointDir string
 	checkpointEnv []string
+	historyLines  []string
 }
 
 type rcCheckpoint struct {
 	Version int      `json:"version"`
 	Dir     string   `json:"dir"`
 	Env     []string `json:"env"`
+	History []string `json:"history,omitempty"`
 }
 
 func newCheckpointState(checkpointDir string, checkpointEnv []string) *checkpointState {
@@ -297,6 +315,12 @@ func (s *checkpointState) env() []string {
 	return append([]string(nil), s.checkpointEnv...)
 }
 
+func (s *checkpointState) history() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.historyLines...)
+}
+
 func (s *checkpointState) load(data []byte) error {
 	var saved rcCheckpoint
 	if err := json.Unmarshal(data, &saved); err != nil {
@@ -312,6 +336,8 @@ func (s *checkpointState) load(data []byte) error {
 	defer s.mu.Unlock()
 	s.checkpointDir = saved.Dir
 	s.checkpointEnv = append(s.checkpointEnv[:0], saved.Env...)
+	s.historyLines = append(s.historyLines[:0], saved.History...)
+	s.trimHistoryLocked()
 	s.atPrompt = true
 	return nil
 }
@@ -326,6 +352,7 @@ func (s *checkpointState) save() ([]byte, error) {
 		Version: 1,
 		Dir:     s.checkpointDir,
 		Env:     append([]string(nil), s.checkpointEnv...),
+		History: append([]string(nil), s.historyLines...),
 	})
 }
 
@@ -348,6 +375,21 @@ func (s *checkpointState) setStatus(dir string, status int) {
 	defer s.mu.Unlock()
 	s.checkpointDir = dir
 	s.atPrompt = true
+}
+
+func (s *checkpointState) addHistory(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.historyLines = append(s.historyLines, line)
+	s.trimHistoryLocked()
+}
+
+func (s *checkpointState) trimHistoryLocked() {
+	if len(s.historyLines) <= maxCheckpointHistory {
+		return
+	}
+	copy(s.historyLines, s.historyLines[len(s.historyLines)-maxCheckpointHistory:])
+	s.historyLines = s.historyLines[:maxCheckpointHistory]
 }
 
 func (s *checkpointState) recordCall(args []string) {
