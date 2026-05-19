@@ -274,8 +274,8 @@ func TestPortFileSize(t *testing.T) {
 		if info.Size() != 0 {
 			t.Errorf("initial size was %d, want 0", info.Size())
 		}
-		if info.Mode()&fs.ModeNamedPipe == 0 {
-			t.Fatalf("reader mode = %v, want named pipe", info.Mode())
+		if info.Mode()&fs.ModeNamedPipe != 0 {
+			t.Fatalf("reader mode = %v, want non-FIFO port file", info.Mode())
 		}
 
 		// Write data and check new size

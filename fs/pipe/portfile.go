@@ -6,14 +6,14 @@ import (
 )
 
 // PortFile wraps a Port and exposes it as an fs.File.
-// It models a stream-like, non-seekable special file (named pipe).
+// It models a stream-like, non-seekable Wanix port endpoint.
 //
 // Semantics:
 // - Read/Write delegate to the underlying Port
 // - ReadAt returns EOF for any non-zero offset, otherwise defers to Read
 // - WriteAt ignores offset and defers to Write
 // - Close is a no-op; callers must close the underlying Port explicitly
-// - Stat returns a FileInfo identifying this as a named pipe
+// - Stat reports the buffered byte count without claiming POSIX FIFO semantics
 //
 // Note: fs.File does not require Write, ReadAt, or WriteAt, but providing them
 // keeps this consistent with other stream wrappers in this repo.
@@ -29,7 +29,7 @@ func (pf *PortFile) Close() error { return nil }
 func (pf *PortFile) Read(b []byte) (int, error) { return pf.Port.Read(b) }
 
 func (pf *PortFile) Stat() (fs.FileInfo, error) {
-	return fskit.Entry(pf.Name, fs.ModeNamedPipe|0644, int64(pf.Port.Size())), nil
+	return fskit.Entry(pf.Name, fs.FileMode(0644), int64(pf.Port.Size())), nil
 }
 
 // Optional stream-friendly methods

@@ -206,10 +206,8 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 	}
 	if _, ok := f.file.(io.Seeker); !ok {
 		switch {
-		case (m.Kind == "pipe" || m.Kind == "dir") && f.offset == 0:
+		case m.Kind == "dir" && f.offset == 0:
 			// Fresh path-backed special descriptors can be reopened by path.
-		case m.Kind == "pipe":
-			reasons = append(reasons, "pipe stream offset")
 		case m.Kind == "dir":
 			reasons = append(reasons, "directory stream offset")
 		default:
@@ -583,11 +581,6 @@ func (r *Task) importFDManifests(fds []migration.FDManifest) error {
 func checkFDManifestKind(manifest migration.FDManifest) error {
 	switch manifest.Kind {
 	case "", "file":
-		return nil
-	case "pipe":
-		if manifest.Offset != 0 {
-			return fmt.Errorf("pipe stream offset: %w", migration.ErrUnrestorableFD)
-		}
 		return nil
 	case "dir":
 		if manifest.Offset != 0 {

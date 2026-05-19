@@ -13,9 +13,6 @@
     </wanix-system>
 
     <script type="module">
-        const dec = new TextDecoder();
-        const enc = new TextEncoder();
-
         function ready(el) {
             if (el.isReady) {
                 return Promise.resolve();
@@ -41,52 +38,34 @@
             progress.step = "bind";
             await source.root.bindMemFS("mnt");
             await target.root.bindMemFS("mnt");
-            await source.root.bind("#pipe", "pipe");
-            await target.root.bind("#pipe", "pipe");
 
             progress.step = "seed";
             await source.root.writeFile("mnt/proof.txt", "directory-fd\n");
             const dirFD = await source.root.open("mnt");
-            const pipeFD = await source.root.openFile("pipe/data", 2, 0);
 
             progress.step = "export";
             const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
                 {id: "rootfs", source: "mnt"},
-                {id: "pipework", source: "pipe", archive: false},
             ]));
             const dirManifest = fdManifest(bundle.manifest, dirFD);
-            const pipeManifest = fdManifest(bundle.manifest, pipeFD);
 
             progress.step = "import";
             const restore = await target.root.importBundle(bundle);
 
             progress.step = "verify";
             const restoredDir = await target.root.fstat(dirFD);
-            const restoredPipe = await target.root.fstat(pipeFD);
-            const pipeReadFD = await target.root.openFile("pipe/data1", 2, 0);
-            await target.root.write(pipeFD, enc.encode("pipe-restored"));
-            const pipeData = dec.decode(await target.root.read(pipeReadFD, "pipe-restored".length));
             const dirData = await target.root.readText("mnt/proof.txt");
 
             const result = {
                 ok: dirManifest.kind === "dir" &&
                     dirManifest.restorable === true &&
                     (dirManifest.offset || 0) === 0 &&
-                    pipeManifest.kind === "pipe" &&
-                    pipeManifest.restorable === true &&
-                    (pipeManifest.offset || 0) === 0 &&
                     restoredDir.IsDir === true &&
-                    restoredPipe.IsDir === false &&
-                    pipeData === "pipe-restored" &&
                     dirData === "directory-fd\n" &&
                     (restore.tasks || []).includes("1"),
                 dirFD,
-                pipeFD,
                 dirManifest,
-                pipeManifest,
                 restoredDir,
-                restoredPipe,
-                pipeData,
                 dirData,
                 tasks: restore.tasks || [],
                 archives: bundle.archives.length,
