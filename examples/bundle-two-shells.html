@@ -160,6 +160,17 @@
             color: #dbe8ca;
             font-size: 30px;
             background: #22291d;
+            cursor: pointer;
+            font: inherit;
+            line-height: 1;
+        }
+        .arrow:disabled {
+            cursor: default;
+            opacity: .55;
+        }
+        .arrow:not(:disabled):hover {
+            background: #293221;
+            border-color: #64764d;
         }
         .transfer pre {
             margin: 0;
@@ -228,14 +239,15 @@
                     </div>
                 </div>
                 <div class="terminal-wrap" id="source-terminal">
-                    <div class="terminal-empty">source rc shell starts after export</div>
+                    <div class="terminal-empty">source rc shell opens in demo after export</div>
                 </div>
-                <div class="hint" id="source-hint">$ cat demo/proof.txt
-$ cat checkpoint-worker.js</div>
+                <div class="hint" id="source-hint">$ pwd
+$ cat proof.txt
+$ mkdir foo</div>
             </section>
 
             <div class="transfer">
-                <div class="arrow">→</div>
+                <button class="arrow" id="transfer-button" type="button" disabled title="Re-export demo files">→</button>
                 <pre id="transfer-log">waiting</pre>
             </div>
 
@@ -259,10 +271,11 @@ $ cat checkpoint-worker.js</div>
                     </div>
                 </div>
                 <div class="terminal-wrap" id="target-terminal">
-                    <div class="terminal-empty">target rc shell starts after import</div>
+                    <div class="terminal-empty">target rc shell opens in demo after import</div>
                 </div>
-                <div class="hint" id="target-hint">$ cat demo/proof.txt
-$ cat #task/&lt;task&gt;/cmd</div>
+                <div class="hint" id="target-hint">$ pwd
+$ cat proof.txt
+$ ls</div>
             </section>
         </div>
     </main>
@@ -281,6 +294,10 @@ $ cat #task/&lt;task&gt;/cmd</div>
             ok: false,
             shells: {},
         };
+        let sourceSystem;
+        let targetSystem;
+        let syncBusy = false;
+        let syncCount = 0;
 
         function $(id) {
             return document.getElementById(id);
@@ -354,6 +371,7 @@ $ cat #task/&lt;task&gt;/cmd</div>
             const task = system.openHandle(taskID);
             await system.root.writeFile([taskPath, "cmd"].join("/"), "rc.wasm");
             await system.root.writeFile([taskPath, "alias"].join("/"), alias);
+            await system.root.writeFile([taskPath, "dir"].join("/"), "demo");
             await task.bind(taskPath, "#task/self");
 
             const termID = (await system.root.readText("#term/new")).trim();
@@ -379,6 +397,63 @@ $ cat #task/&lt;task&gt;/cmd</div>
             return {taskID, termPath};
         }
 
+        async function removeAllIfPresent(root, name) {
+            try {
+                await root.removeAll(name);
+            } catch {
+            }
+        }
+
+        function byteLength(data) {
+            if (typeof data === "string") {
+                return data.length;
+            }
+            return data?.byteLength || data?.length || 0;
+        }
+
+        async function resyncDemoDirectory() {
+            if (syncBusy || !sourceSystem || !targetSystem) {
+                return null;
+            }
+            syncBusy = true;
+            $("transfer-button").disabled = true;
+            syncCount++;
+            try {
+                setStatus("re-exporting demo files");
+                const archive = await sourceSystem.root.archive("demo");
+                await removeAllIfPresent(targetSystem.root, "demo");
+                await targetSystem.root.makeDirAll("demo");
+                const imported = await targetSystem.root.importArchive("demo", archive);
+                const sourceFile = await sourceSystem.root.readText("demo/proof.txt");
+                const targetFile = await targetSystem.root.readText("demo/proof.txt");
+                setText("source-file", sourceFile.trim());
+                setText("target-file", targetFile.trim());
+                setText("target-restore", `resync ${syncCount}\nentries ${imported.entries}\nfiles ${imported.files}`);
+                setText("transfer-log", `resync ${syncCount}
+archive demo ${byteLength(archive)} bytes
+imported ${imported.entries} entries`);
+                result.resync = {
+                    count: syncCount,
+                    bytes: byteLength(archive),
+                    imported,
+                    sourceFile,
+                    targetFile,
+                    ok: sourceFile === targetFile,
+                };
+                setStatus(sourceFile === targetFile ? "filesystem resync complete" : "filesystem resync mismatch");
+                document.body.dataset.result = JSON.stringify(result);
+                return result.resync;
+            } catch (error) {
+                result.resyncError = String(error && error.message || error);
+                setStatus("filesystem resync failed");
+                document.body.dataset.result = JSON.stringify(result);
+                throw error;
+            } finally {
+                syncBusy = false;
+                $("transfer-button").disabled = false;
+            }
+        }
+
         async function writeTerminal(system, termPath, text) {
             const stream = await system.root.openWritable([termPath, "data"].join("/"));
             const writer = stream.getWriter();
@@ -392,6 +467,11 @@ $ cat #task/&lt;task&gt;/cmd</div>
         window.wanixTwoShellDemoResult = (async () => {
             const source = $("source");
             const target = $("target");
+            sourceSystem = source;
+            targetSystem = target;
+            $("transfer-button").addEventListener("click", () => {
+                resyncDemoDirectory().catch(error => console.error("resync demo directory:", error));
+            });
             setStatus("booting source and target");
             await Promise.all([ready(source), ready(target)]);
 
@@ -444,15 +524,16 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
             setText("target-file", targetFile.trim());
             setText("target-state", JSON.stringify(targetState, null, 2));
             setText("target-restore", `tasks ${JSON.stringify(restore.tasks || [])}`);
+            $("transfer-button").disabled = false;
 
             setStatus("starting rc shells");
             try {
                 result.shells.source = await startRCShell(source, "source-rc", "source-terminal");
                 result.shells.target = await startRCShell(target, "target-rc", "target-terminal");
-                setText("source-hint", "$ cat demo/proof.txt\n$ cat #task/" + taskID + "/cmd");
-                setText("target-hint", "$ cat demo/proof.txt\n$ cat #task/" + taskID + "/cmd");
+                setText("source-hint", "$ pwd\n$ cat proof.txt\n$ mkdir foo");
+                setText("target-hint", "$ pwd\n$ cat proof.txt\n$ ls");
                 await new Promise(resolve => setTimeout(resolve, 500));
-                const commands = "cat demo/proof.txt\ncat #task/" + taskID + "/cmd\n";
+                const commands = "pwd\ncat proof.txt\n";
                 await writeTerminal(source, result.shells.source.termPath, commands);
                 await writeTerminal(target, result.shells.target.termPath, commands);
             } catch (error) {
@@ -486,6 +567,7 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
             document.body.dataset.result = JSON.stringify(result);
             return result;
         });
+        window.wanixTwoShellDemoResync = resyncDemoDirectory;
     </script>
 </body>
 </html>
