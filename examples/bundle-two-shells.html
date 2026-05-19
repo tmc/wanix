@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Wanix bundle migration shells</title>
+    <script type="module" src="../dist/wanix.min.js"></script>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #151713;
+            color: #eceee8;
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: #151713;
+        }
+        main {
+            min-height: 100vh;
+            display: grid;
+            grid-template-rows: auto 1fr;
+        }
+        header {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 16px;
+            align-items: center;
+            padding: 14px 18px;
+            border-bottom: 1px solid #30342b;
+            background: #1d211a;
+        }
+        h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 650;
+            letter-spacing: 0;
+        }
+        #status {
+            min-width: 260px;
+            padding: 8px 10px;
+            border: 1px solid #3d4533;
+            background: #10120f;
+            color: #cbd7bc;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            text-align: right;
+        }
+        .stage {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr);
+            min-height: 0;
+        }
+        section {
+            min-width: 0;
+            min-height: 0;
+            display: grid;
+            grid-template-rows: auto auto minmax(240px, 1fr) auto;
+            gap: 12px;
+            padding: 18px;
+        }
+        section.source {
+            border-right: 1px solid #30342b;
+        }
+        section.target {
+            border-left: 1px solid #30342b;
+        }
+        .env-title {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: center;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            color: #aab59c;
+        }
+        .pill {
+            padding: 5px 8px;
+            border: 1px solid #3a4432;
+            color: #c8d7b9;
+            background: #22291d;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .facts {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .fact {
+            border: 1px solid #30382b;
+            background: #1b1f18;
+            padding: 9px;
+            min-height: 62px;
+        }
+        .fact b {
+            display: block;
+            margin-bottom: 7px;
+            color: #99a78c;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+        }
+        .fact code {
+            display: block;
+            overflow-wrap: anywhere;
+            white-space: pre-wrap;
+            color: #eef7e2;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+        .terminal-wrap {
+            min-height: 0;
+            border: 1px solid #353c30;
+            background: #050604;
+            display: grid;
+        }
+        .terminal-empty {
+            align-self: center;
+            justify-self: center;
+            color: #89927c;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+        }
+        .hint {
+            min-height: 54px;
+            padding: 9px;
+            border: 1px solid #30382b;
+            background: #191d16;
+            color: #c5d1ba;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+        }
+        .transfer {
+            min-width: 0;
+            display: grid;
+            align-content: center;
+            justify-items: center;
+            gap: 12px;
+            padding: 18px 10px;
+            background: #181b15;
+        }
+        .arrow {
+            width: 64px;
+            height: 64px;
+            display: grid;
+            place-items: center;
+            border: 1px solid #4a553c;
+            border-radius: 50%;
+            color: #dbe8ca;
+            font-size: 30px;
+            background: #22291d;
+        }
+        .transfer pre {
+            margin: 0;
+            width: 100%;
+            white-space: pre-wrap;
+            text-align: center;
+            color: #cbd7bc;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 11px;
+            line-height: 1.45;
+        }
+        wanix-system.runtime {
+            display: none;
+        }
+        @media (max-width: 920px) {
+            header,
+            .stage {
+                grid-template-columns: 1fr;
+            }
+            #status {
+                text-align: left;
+                min-width: 0;
+            }
+            section.source,
+            section.target {
+                border: 0;
+            }
+            .transfer {
+                min-height: 120px;
+                border-block: 1px solid #30342b;
+            }
+            .arrow {
+                transform: rotate(90deg);
+            }
+            .facts {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main>
+        <header>
+            <h1>Wanix bundle migration</h1>
+            <div id="status">booting source and target</div>
+        </header>
+
+        <div class="stage">
+            <section class="source">
+                <div class="env-title">
+                    <span>Source</span>
+                    <span class="pill" id="source-task">task pending</span>
+                </div>
+                <div class="facts">
+                    <div class="fact">
+                        <b>File</b>
+                        <code id="source-file">pending</code>
+                    </div>
+                    <div class="fact">
+                        <b>Checkpoint</b>
+                        <code id="source-state">pending</code>
+                    </div>
+                    <div class="fact">
+                        <b>Bundle</b>
+                        <code id="source-bundle">pending</code>
+                    </div>
+                </div>
+                <div class="terminal-wrap" id="source-terminal">
+                    <div class="terminal-empty">source rc shell starts after export</div>
+                </div>
+                <div class="hint" id="source-hint">$ cat demo/proof.txt
+$ cat checkpoint-worker.js</div>
+            </section>
+
+            <div class="transfer">
+                <div class="arrow">→</div>
+                <pre id="transfer-log">waiting</pre>
+            </div>
+
+            <section class="target">
+                <div class="env-title">
+                    <span>Target</span>
+                    <span class="pill" id="target-task">task pending</span>
+                </div>
+                <div class="facts">
+                    <div class="fact">
+                        <b>File</b>
+                        <code id="target-file">pending</code>
+                    </div>
+                    <div class="fact">
+                        <b>Checkpoint</b>
+                        <code id="target-state">pending</code>
+                    </div>
+                    <div class="fact">
+                        <b>Restore</b>
+                        <code id="target-restore">pending</code>
+                    </div>
+                </div>
+                <div class="terminal-wrap" id="target-terminal">
+                    <div class="terminal-empty">target rc shell starts after import</div>
+                </div>
+                <div class="hint" id="target-hint">$ cat demo/proof.txt
+$ cat #task/&lt;task&gt;/cmd</div>
+            </section>
+        </div>
+    </main>
+
+    <wanix-system id="source" class="runtime" wasm="../dist/wanix.debug.wasm" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+    <wanix-system id="target" class="runtime" wasm="../dist/wanix.debug.wasm" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <script type="module">
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+        const result = {
+            ok: false,
+            shells: {},
+        };
+
+        function $(id) {
+            return document.getElementById(id);
+        }
+
+        function setStatus(text) {
+            $("status").textContent = text;
+        }
+
+        function setText(id, text) {
+            $(id).textContent = text;
+        }
+
+        function ready(el) {
+            if (el.isReady) {
+                return Promise.resolve();
+            }
+            return new Promise((resolve, reject) => {
+                el.addEventListener("ready", resolve, {once: true});
+                el.addEventListener("error", event => reject(event.detail?.error || event), {once: true});
+            });
+        }
+
+        async function newTask(root, kind) {
+            return (await root.readText(["#task", "new", kind].join("/"))).trim();
+        }
+
+        async function waitFor(label, fn, timeoutMs=10000) {
+            const deadline = Date.now() + timeoutMs;
+            let last;
+            while (Date.now() < deadline) {
+                try {
+                    const value = await fn();
+                    if (value) {
+                        return value;
+                    }
+                } catch (error) {
+                    last = error;
+                }
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            throw new Error(`${label}: ${last ? last.message || last : "timeout"}`);
+        }
+
+        function taskState(states, id) {
+            const state = states.find(state => state.id === id);
+            if (!state) {
+                return null;
+            }
+            const data = state.data;
+            if (typeof data === "string") {
+                return JSON.parse(data);
+            }
+            return JSON.parse(decoder.decode(data));
+        }
+
+        async function fetchRC() {
+            const response = await fetch("./repl-rc/rc.wasm");
+            if (!response.ok) {
+                throw new Error(`fetch rc.wasm: HTTP ${response.status}`);
+            }
+            return new Uint8Array(await response.arrayBuffer());
+        }
+
+        async function startRCShell(system, alias, hostID) {
+            const rc = await fetchRC();
+            await system.root.writeFile("rc.wasm", rc);
+
+            const taskID = await newTask(system.root, "gojs");
+            const taskPath = ["#task", taskID].join("/");
+            const task = system.openHandle(taskID);
+            await system.root.writeFile([taskPath, "cmd"].join("/"), "rc.wasm");
+            await system.root.writeFile([taskPath, "alias"].join("/"), alias);
+            await task.bind(taskPath, "#task/self");
+
+            const termID = (await system.root.readText("#term/new")).trim();
+            const termPath = ["#term", termID].join("/");
+            await system.root.bind(termPath, [taskPath, "term"].join("/"));
+            await system.root.bind(termPath, ["#task", alias, "term"].join("/"));
+            await task.bind(termPath, "#task/self/term");
+            for (const fd of [0, 1, 2]) {
+                await task.bind([termPath, "program"].join("/"), [taskPath, "fd", String(fd)].join("/"));
+            }
+            await system.root.writeFile([taskPath, "ctl"].join("/"), "start");
+
+            const term = document.createElement("wanix-term");
+            term.setAttribute("for", system.id);
+            term.setAttribute("path", ["#task", alias, "term"].join("/"));
+            term.setAttribute("font-size", "12");
+            term.setAttribute("scrollback", "2000");
+            const host = $(hostID);
+            host.replaceChildren(term);
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            term._system = system;
+            await term.connect();
+            return {taskID, termPath};
+        }
+
+        async function writeTerminal(system, termPath, text) {
+            const stream = await system.root.openWritable([termPath, "data"].join("/"));
+            const writer = stream.getWriter();
+            try {
+                await writer.write(encoder.encode(text));
+            } finally {
+                await writer.close();
+            }
+        }
+
+        window.wanixTwoShellDemoResult = (async () => {
+            const source = $("source");
+            const target = $("target");
+            setStatus("booting source and target");
+            await Promise.all([ready(source), ready(target)]);
+
+            setStatus("creating source workload");
+            await source.root.makeDirAll("demo");
+            await source.root.writeFile("demo/proof.txt", "left side wrote this before export\n");
+            await source.root.writeFile("checkpoint-worker.js", `
+                const encoder = new TextEncoder();
+                const decoder = new TextDecoder();
+                let checkpoint = {counter: 7, label: "left", restored: false};
+                globalThis.WanixCheckpoint.install({
+                    load(state) {
+                        checkpoint = JSON.parse(decoder.decode(state));
+                        checkpoint.restored = true;
+                    },
+                    save() {
+                        return encoder.encode(JSON.stringify(checkpoint));
+                    },
+                });
+            `);
+            const taskID = await newTask(source.root, "js");
+            await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "checkpoint-worker.js");
+            await source.root.writeFile(["#task", taskID, "ctl"].join("/"), "start");
+            setText("source-task", `task ${taskID}`);
+
+            const sourceState = await waitFor("source checkpoint", async () => {
+                return taskState(await source.root.bundleTaskStates(), taskID);
+            });
+            const sourceFile = await source.root.readText("demo/proof.txt");
+            setText("source-file", sourceFile.trim());
+            setText("source-state", JSON.stringify(sourceState, null, 2));
+
+            setStatus("exporting bundle from source");
+            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+                {id: "rootfs", source: "."},
+            ]));
+            setText("source-bundle", `${bundle.archives.length} archive(s)\n${bundle.states.length} state payload(s)`);
+            setText("transfer-log", `manifest ${bundle.manifest.version}
+archives ${bundle.archives.map(archive => archive.id).join(", ")}
+states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join(", ")}`);
+
+            setStatus("importing bundle into target");
+            const restore = await target.root.importBundle(bundle);
+            const targetFile = await target.root.readText("demo/proof.txt");
+            const targetState = await waitFor("target checkpoint", async () => {
+                const state = taskState(await target.root.bundleTaskStates(), taskID);
+                return state && state.restored ? state : null;
+            });
+            setText("target-task", `task ${taskID}`);
+            setText("target-file", targetFile.trim());
+            setText("target-state", JSON.stringify(targetState, null, 2));
+            setText("target-restore", `tasks ${JSON.stringify(restore.tasks || [])}`);
+
+            setStatus("starting rc shells");
+            try {
+                result.shells.source = await startRCShell(source, "source-rc", "source-terminal");
+                result.shells.target = await startRCShell(target, "target-rc", "target-terminal");
+                setText("source-hint", "$ cat demo/proof.txt\n$ cat #task/" + taskID + "/cmd");
+                setText("target-hint", "$ cat demo/proof.txt\n$ cat #task/" + taskID + "/cmd");
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const commands = "cat demo/proof.txt\ncat #task/" + taskID + "/cmd\n";
+                await writeTerminal(source, result.shells.source.termPath, commands);
+                await writeTerminal(target, result.shells.target.termPath, commands);
+            } catch (error) {
+                result.shellError = String(error && error.message || error);
+                setText("source-hint", "rc.wasm is not built. Run: make -C examples/repl-rc build");
+                setText("target-hint", result.shellError);
+            }
+
+            result.ok = sourceFile === "left side wrote this before export\n" &&
+                targetFile === sourceFile &&
+                sourceState.counter === 7 &&
+                sourceState.restored === false &&
+                targetState.counter === 7 &&
+                targetState.restored === true &&
+                (restore.tasks || []).includes(taskID) &&
+                !result.shellError;
+            result.taskID = taskID;
+            result.sourceState = sourceState;
+            result.targetState = targetState;
+            result.archives = bundle.archives.map(archive => archive.id);
+            result.states = bundle.states.map(state => [state.kind || "", state.id, state.path || state.state_path || ""]);
+            result.file = targetFile;
+            setStatus(result.ok ? "migration complete" : "migration incomplete");
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        })().catch(error => {
+            result.ok = false;
+            result.error = String(error && error.message || error);
+            result.stack = String(error && error.stack || "");
+            setStatus("demo failed");
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+    </script>
+</body>
+</html>
