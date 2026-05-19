@@ -1,5 +1,6 @@
 export * from "./wasi/mod.ts";
 export * from "./elements/index.js";
+export * from "./api/checkpoint.js";
 
 // helper to make websockets easier to use in go
 export class WanixSocket {
