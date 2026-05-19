@@ -170,7 +170,7 @@ func saveTaskState(ctx context.Context, task *wanix.Task) ([]byte, error) {
 	done := make(chan result, 1)
 	listener := js.FuncOf(func(this js.Value, args []js.Value) any {
 		msg := args[0].Get("data")
-		if msg.Get("type").String() != "wanix-checkpoint" || msg.Get("op").String() != "save-state" {
+		if msg.Get("type").String() != wanixCheckpointType || msg.Get("op").String() != wanixCheckpointSaveStateOp {
 			return nil
 		}
 		if got := msg.Get("id"); got.Type() == js.TypeString && got.String() != id {
@@ -199,9 +199,10 @@ func saveTaskState(ctx context.Context, task *wanix.Task) ([]byte, error) {
 	defer worker.Call("removeEventListener", "message", listener)
 
 	worker.Call("postMessage", map[string]any{
-		"type": "wanix-checkpoint",
-		"op":   "save-state",
-		"id":   id,
+		"type":    wanixCheckpointType,
+		"op":      wanixCheckpointSaveStateOp,
+		"version": wanixCheckpointVersion,
+		"id":      id,
 	})
 	select {
 	case res := <-done:
@@ -210,6 +211,12 @@ func saveTaskState(ctx context.Context, task *wanix.Task) ([]byte, error) {
 		return nil, ctx.Err()
 	}
 }
+
+const (
+	wanixCheckpointVersion     = 1
+	wanixCheckpointType        = "wanix-checkpoint"
+	wanixCheckpointSaveStateOp = "save-state"
+)
 
 func jsBytes(v js.Value) ([]byte, error) {
 	if v.IsUndefined() || v.IsNull() {
