@@ -34,36 +34,25 @@ manifest, and removes temporary state files after restore.
 
 ## Cooperative task checkpoints
 
-A JavaScript task can participate in migration by replying to the
-`wanix-checkpoint` `save-state` message with bytes that describe the task state.
-When the task is restored, Wanix passes the checkpoint bytes back through the
-worker metadata.
+A JavaScript task can participate in migration by installing the
+`WanixCheckpoint` helper and returning bytes that describe the task state. The
+checkpoint protocol is version 1 and uses `wanix-checkpoint` `save-state`
+messages internally. When the task is restored, Wanix passes the checkpoint
+bytes back through the helper's `load` callback.
 
 ```js
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 let checkpoint = {counter: 0};
 
-globalThis.onmessage = event => {
-    const message = event.data || {};
-    if (message.worker) {
-        if (message.worker.checkpoint_state) {
-            checkpoint = JSON.parse(decoder.decode(message.worker.checkpoint_state));
-        }
-        globalThis.wanixWorker = message.worker;
-        return;
-    }
-    if (message.type !== "wanix-checkpoint" || message.op !== "save-state") {
-        return;
-    }
-    globalThis.postMessage({
-        type: "wanix-checkpoint",
-        op: "save-state",
-        id: message.id,
-        ok: true,
-        state: encoder.encode(JSON.stringify(checkpoint)),
-    });
-};
+globalThis.WanixCheckpoint.install({
+    load(state) {
+        checkpoint = JSON.parse(decoder.decode(state));
+    },
+    save() {
+        return encoder.encode(JSON.stringify(checkpoint));
+    },
+});
 ```
 
 See [../examples/bundle-checkpoint.html](../examples/bundle-checkpoint.html) for

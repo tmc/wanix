@@ -74,27 +74,15 @@
                 const encoder = new TextEncoder();
                 const decoder = new TextDecoder();
                 let checkpoint = {counter: 7, restored: false};
-                globalThis.onmessage = event => {
-                    const message = event.data || {};
-                    if (message.worker) {
-                        if (message.worker.checkpoint_state) {
-                            checkpoint = JSON.parse(decoder.decode(message.worker.checkpoint_state));
-                            checkpoint.restored = true;
-                        }
-                        globalThis.wanixWorker = message.worker;
-                        return;
-                    }
-                    if (message.type !== "wanix-checkpoint" || message.op !== "save-state") {
-                        return;
-                    }
-                    globalThis.postMessage({
-                        type: "wanix-checkpoint",
-                        op: "save-state",
-                        id: message.id,
-                        ok: true,
-                        state: encoder.encode(JSON.stringify(checkpoint)),
-                    });
-                };
+                globalThis.WanixCheckpoint.install({
+                    load(state) {
+                        checkpoint = JSON.parse(decoder.decode(state));
+                        checkpoint.restored = true;
+                    },
+                    save() {
+                        return encoder.encode(JSON.stringify(checkpoint));
+                    },
+                });
             `);
             await source.root.writeFile("proof.txt", "bundle-checkpoint-ok\n");
 
