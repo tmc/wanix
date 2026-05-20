@@ -12,6 +12,7 @@ import (
 	"path"
 	"sync"
 	"syscall/js"
+	"time"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
@@ -50,7 +51,8 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			ReadFunc: func(n *fskit.Node) error {
 				availability, err := promptAvailability()
 				if err != nil {
-					return err
+					fskit.SetData(n, []byte("error: "+err.Error()+"\n"))
+					return nil
 				}
 				fskit.SetData(n, []byte(availability+"\n"))
 				return nil
@@ -194,7 +196,7 @@ func promptAvailability() (string, error) {
 	if err != nil {
 		return "unavailable", nil
 	}
-	availability, err := jsutil.AwaitErr(api.Call("availability"))
+	availability, err := awaitErr(api.Call("availability"), 10*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("llm availability: %w", err)
 	}
@@ -221,13 +223,13 @@ func runPrompt(prompt string) (string, error) {
 	if availability != "available" {
 		return "", fmt.Errorf("llm unavailable: %s", availability)
 	}
-	session, err := jsutil.AwaitErr(api.Call("create"))
+	session, err := awaitErr(api.Call("create"), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("llm create: %w", err)
 	}
 	defer destroySession(session)
 
-	response, err := jsutil.AwaitErr(session.Call("prompt", prompt))
+	response, err := awaitErr(session.Call("prompt", prompt), 2*time.Minute)
 	if err != nil {
 		return "", fmt.Errorf("llm prompt: %w", err)
 	}
@@ -240,4 +242,22 @@ func destroySession(session js.Value) {
 		return
 	}
 	destroy.Invoke()
+}
+
+func awaitErr(promise js.Value, timeout time.Duration) (js.Value, error) {
+	type result struct {
+		value js.Value
+		err   error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		value, err := jsutil.AwaitErr(promise)
+		ch <- result{value: value, err: err}
+	}()
+	select {
+	case r := <-ch:
+		return r.value, r.err
+	case <-time.After(timeout):
+		return js.Undefined(), fmt.Errorf("timeout")
+	}
 }
