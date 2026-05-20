@@ -196,7 +196,7 @@ func promptAvailability() (string, error) {
 	if err != nil {
 		return "unavailable", nil
 	}
-	availability, err := awaitErr(api.Call("availability"), 10*time.Second)
+	availability, err := awaitErr(api.Call("availability", languageModelOptions()), 10*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("llm availability: %w", err)
 	}
@@ -223,7 +223,7 @@ func runPrompt(prompt string) (string, error) {
 	if availability != "available" {
 		return "", fmt.Errorf("llm unavailable: %s", availability)
 	}
-	session, err := awaitErr(api.Call("create"), 30*time.Second)
+	session, err := awaitErr(api.Call("create", languageModelOptions()), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("llm create: %w", err)
 	}
@@ -242,6 +242,19 @@ func destroySession(session js.Value) {
 		return
 	}
 	destroy.Invoke()
+}
+
+func languageModelOptions() map[string]any {
+	return map[string]any{
+		"expectedInputs": []any{map[string]any{
+			"type":      "text",
+			"languages": []string{"en"},
+		}},
+		"expectedOutputs": []any{map[string]any{
+			"type":      "text",
+			"languages": []string{"en"},
+		}},
+	}
 }
 
 func awaitErr(promise js.Value, timeout time.Duration) (js.Value, error) {
