@@ -637,6 +637,46 @@ func TestTaskFSImportBundleManifest(t *testing.T) {
 	if string(data) != "hello" {
 		t.Fatalf("restored file = %q, want hello", data)
 	}
+
+	replacement := memfs.New()
+	if err := fs.WriteFile(replacement, "file.txt", []byte("updated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err = taskfs.ImportBundleManifest(context.Background(), testBundleManifest(migration.BundleManifest{
+		Tasks: []migration.TaskManifest{{
+			ID:   "2",
+			Kind: "auto",
+			Namespace: migration.NamespaceManifest{
+				TaskID: "2",
+				Binds: []migration.BindManifest{{
+					DstPath: ".",
+					SrcFSID: "rootfs",
+					SrcPath: ".",
+					Mode:    "replace",
+					Index:   0,
+					Root:    true,
+				}},
+			},
+		}},
+	}), nil, func(id string) (fs.FS, error) {
+		if id == "rootfs" {
+			return replacement, nil
+		}
+		return nil, migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ID() != "2" {
+		t.Fatalf("replacement tasks = %#v, want task id 2", tasks)
+	}
+	data, err = fs.ReadFile(tasks[0].NS(), "file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "updated" {
+		t.Fatalf("replaced file = %q, want updated", data)
+	}
 }
 
 func TestTaskFSImportBundleManifestRollsBackOnFailure(t *testing.T) {

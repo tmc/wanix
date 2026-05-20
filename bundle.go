@@ -2,6 +2,7 @@ package wanix
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -266,6 +267,17 @@ func (d *TaskFS) importBundleManifest(ctx context.Context, manifest migration.Bu
 			existing = append(existing, restore)
 			tasks = append(tasks, parent)
 			continue
+		}
+		if existingTask, err := d.Lookup(taskManifest.ID); err == nil {
+			restore, err := d.restoreExistingTask(ctx, existingTask, taskManifest, lookup)
+			if err != nil {
+				return fail(err)
+			}
+			existing = append(existing, restore)
+			tasks = append(tasks, existingTask)
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fail(err)
 		}
 		task, err := d.ImportManifest(ctx, taskManifest, parent, lookup)
 		if err != nil {
