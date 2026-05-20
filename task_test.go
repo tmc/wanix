@@ -3,6 +3,7 @@ package wanix
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -144,6 +145,57 @@ func TestTaskFDManifestsStdioDoesNotWaitForRead(t *testing.T) {
 	<-done
 }
 
+func TestTaskFDManifestsNonStdioDoesNotWaitForRead(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd := root.OpenFDWithFlags(pipeReadFile{Reader: pr}, "term/data", os.O_RDONLY)
+	opened, _, err := root.FD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readStarted := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(readStarted)
+		var b [1]byte
+		_, err := opened.Read(b[:])
+		done <- err
+	}()
+	<-readStarted
+
+	manifestDone := make(chan error, 1)
+	go func() {
+		fds, err := root.FDManifests()
+		if !errors.Is(err, migration.ErrUnrestorableFD) {
+			manifestDone <- err
+			return
+		}
+		if len(fds) != 1 || fds[0].Restorable || !strings.Contains(fds[0].Error, "file operation in progress") {
+			manifestDone <- fmt.Errorf("unexpected fd manifest: %#v", fds)
+			return
+		}
+		manifestDone <- nil
+	}()
+
+	select {
+	case err := <-manifestDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("FDManifests waited for blocked non-stdio read")
+	}
+
+	pw.Close()
+	<-done
+}
+
 type pipeReadFile struct {
 	io.Reader
 }
@@ -189,6 +241,27 @@ func TestTaskFDManifestsPipeFailClosed(t *testing.T) {
 	got := fds[0]
 	if got.FD != fd || got.Kind == "pipe" || got.Path != "pipe/data" || got.Restorable || !strings.Contains(got.Error, "file is not seekable") {
 		t.Fatalf("unexpected pipe fd manifest: %#v", got)
+	}
+}
+
+func TestTaskFDManifestsTerminalStreamFailClosed(t *testing.T) {
+	root, err := NewRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &seekFile{Reader: strings.NewReader(""), info: fskit.Entry("data", 0666)}
+	fd := root.OpenFDWithFlags(file, "#task/source-rc/term/data", os.O_RDWR)
+
+	fds, err := root.FDManifests()
+	if !errors.Is(err, migration.ErrUnrestorableFD) {
+		t.Fatalf("FDManifests error = %v, want ErrUnrestorableFD", err)
+	}
+	if len(fds) != 1 {
+		t.Fatalf("got %d fd manifests, want 1", len(fds))
+	}
+	got := fds[0]
+	if got.FD != fd || got.Restorable || !strings.Contains(got.Error, "terminal stream") {
+		t.Fatalf("unexpected terminal fd manifest: %#v", got)
 	}
 }
 
@@ -608,6 +681,19 @@ func (f *nonSeekFile) Close() error {
 }
 
 func (f *nonSeekFile) Stat() (fs.FileInfo, error) {
+	return f.info, nil
+}
+
+type seekFile struct {
+	*strings.Reader
+	info fs.FileInfo
+}
+
+func (f *seekFile) Close() error {
+	return nil
+}
+
+func (f *seekFile) Stat() (fs.FileInfo, error) {
 	return f.info, nil
 }
 

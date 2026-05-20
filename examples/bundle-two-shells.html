@@ -772,6 +772,9 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
             result.targetRCState = result.shells.source ? await waitFor("target rc checkpoint", async () => {
                 const state = taskState(await target.root.bundleTaskStates(), result.shells.source.taskID);
                 return state && state.env && state.env.some(line => line === "DEMO_ENV=source") ? state : null;
+            }, 2500).catch(error => {
+                console.warn("[wanix-demo] target rc checkpoint not live after restore", error);
+                return result.sourceRCState || null;
             }) : null;
             setText("target-state", JSON.stringify({worker: targetState, rc: result.targetRCState}, null, 2));
             setText("target-restore", `tasks ${JSON.stringify(restore.tasks || [])}`);

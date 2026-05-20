@@ -191,7 +191,17 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 		}, nil
 	}
 
-	f.mu.Lock()
+	if !f.mu.TryLock() {
+		return migration.FDManifest{
+			FD:         fd,
+			Path:       f.path,
+			Flags:      f.flags,
+			Offset:     f.offset,
+			Stdio:      f.stdio,
+			Restorable: false,
+			Error:      "file operation in progress",
+		}, fmt.Errorf("fd %d file operation in progress: %w", fd, migration.ErrUnrestorableFD)
+	}
 	defer f.mu.Unlock()
 
 	m := migration.FDManifest{
@@ -207,6 +217,9 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 	var reasons []string
 	if f.path == "" {
 		reasons = append(reasons, "missing path")
+	}
+	if isTerminalFDPath(f.path) {
+		reasons = append(reasons, "terminal stream")
 	}
 	if !f.flagsKnown {
 		reasons = append(reasons, "unknown open flags")
@@ -228,6 +241,10 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 	}
 	m.Restorable = true
 	return m, nil
+}
+
+func isTerminalFDPath(name string) bool {
+	return strings.HasSuffix(name, "/term/data") || strings.HasPrefix(name, "#term/")
 }
 
 func fdKind(mode fs.FileMode) string {
@@ -488,10 +505,14 @@ func (r *Task) Manifest(resolve vfs.FSIDResolver) (migration.TaskManifest, error
 		}
 	}
 	fds, err := r.FDManifests()
-	if err != nil {
+	if err != nil && !errors.Is(err, migration.ErrUnrestorableFD) {
 		errs = append(errs, err)
 	}
-	manifest.FDs = fds
+	for _, fd := range fds {
+		if fd.Restorable && !fd.Stdio {
+			manifest.FDs = append(manifest.FDs, fd)
+		}
+	}
 	return manifest, errors.Join(errs...)
 }
 
