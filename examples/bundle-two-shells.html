@@ -684,7 +684,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
 
             setStatus("exporting bundle from source");
             const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
-                {id: "rootfs", source: "."},
+                {id: "rootfs", source: ".", archive: "demo", archive_target: "demo", filesystem_source: "."},
             ]));
             currentBundle = bundle;
             $("download-bundle").disabled = false;
