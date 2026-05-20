@@ -77,6 +77,11 @@
             cursor: not-allowed;
             opacity: 0.55;
         }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
         output {
             display: block;
             box-sizing: border-box;
@@ -110,7 +115,7 @@
     </style>
 </head>
 <body>
-    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=3" debug></wanix-system>
+    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=4" debug></wanix-system>
 
     <main>
         <h1>Wanix Web LLM</h1>
@@ -120,7 +125,10 @@
         </div>
         <form id="prompt-form">
             <textarea id="prompt">Write one sentence about filesystems as APIs.</textarea>
-            <button id="run" type="submit" disabled>Run prompt</button>
+            <div class="actions">
+                <button id="download" type="button" disabled>Download model</button>
+                <button id="run" type="submit" disabled>Run prompt</button>
+            </div>
         </form>
         <output id="output"></output>
     </main>
@@ -129,6 +137,7 @@
         const system = document.querySelector("wanix-system");
         const form = document.querySelector("#prompt-form");
         const prompt = document.querySelector("#prompt");
+        const download = document.querySelector("#download");
         const run = document.querySelector("#run");
         const status = document.querySelector("#status");
         const dot = document.querySelector("#dot");
@@ -159,12 +168,31 @@
             return decoder.decode(await system.root.readFile("#web/llm/availability")).trim();
         }
 
-        system.addEventListener("ready", async () => {
+        async function refreshAvailability() {
             const availability = await readAvailability();
             status.textContent = `LanguageModel: ${availability}`;
             dot.classList.toggle("ready", availability === "available");
             dot.classList.toggle("blocked", availability !== "available");
+            download.disabled = availability !== "downloadable" && availability !== "downloading";
             run.disabled = false;
+        }
+
+        system.addEventListener("ready", async () => {
+            await refreshAvailability();
+        });
+
+        download.addEventListener("click", async () => {
+            download.disabled = true;
+            run.disabled = true;
+            output.textContent = "starting model download";
+            try {
+                output.textContent = decoder.decode(await system.root.readFile("#web/llm/download"));
+                await refreshAvailability();
+            } catch (err) {
+                output.textContent = String(err);
+            } finally {
+                run.disabled = false;
+            }
         });
 
         form.addEventListener("submit", async (event) => {

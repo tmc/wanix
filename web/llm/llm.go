@@ -43,6 +43,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	case ".":
 		return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
+			fskit.Entry("download", 0777),
 			fskit.Entry("prompt", 0777),
 		), nil
 	case "availability":
@@ -58,11 +59,93 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 				return nil
 			},
 		}, nil
+	case "download":
+		return newDownloadFile(name), nil
 	case "prompt":
 		return newPromptFile(name), nil
 	default:
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
+}
+
+type downloadFile struct {
+	name string
+
+	mu      sync.Mutex
+	pending []byte
+	off     int
+	closed  bool
+	eof     bool
+	ran     bool
+}
+
+func newDownloadFile(name string) *downloadFile {
+	return &downloadFile{name: name}
+}
+
+func (f *downloadFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(path.Base(f.name), 0777), nil
+}
+
+func (f *downloadFile) Read(b []byte) (int, error) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return 0, fs.ErrClosed
+	}
+	if f.eof {
+		f.eof = false
+		f.mu.Unlock()
+		return 0, io.EOF
+	}
+	if len(f.pending) > f.off {
+		n := copy(b, f.pending[f.off:])
+		f.off += n
+		if f.off >= len(f.pending) {
+			f.pending = nil
+			f.off = 0
+			f.eof = true
+		}
+		f.mu.Unlock()
+		return n, nil
+	}
+	if f.ran {
+		f.mu.Unlock()
+		return 0, io.EOF
+	}
+	f.ran = true
+	f.mu.Unlock()
+
+	f.mu.Lock()
+	f.pending = []byte(downloadOnce() + "\n")
+	f.off = 0
+	f.mu.Unlock()
+	return f.Read(b)
+}
+
+func (f *downloadFile) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return 0, fs.ErrClosed
+	}
+	f.ran = true
+	f.pending = []byte(downloadOnce() + "\n")
+	f.off = 0
+	f.eof = false
+	f.mu.Unlock()
+	return len(p), nil
+}
+
+func (f *downloadFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *downloadFile) Seek(int64, int) (int64, error) {
+	return 0, &fs.PathError{Op: "seek", Path: f.name, Err: fs.ErrInvalid}
 }
 
 type promptOutcome struct {
@@ -201,6 +284,42 @@ func promptAvailability() (string, error) {
 		return "", fmt.Errorf("llm availability: %w", err)
 	}
 	return availability.String(), nil
+}
+
+func downloadOnce() string {
+	status, err := ensureModel()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	return status
+}
+
+func ensureModel() (string, error) {
+	api, err := promptAPI()
+	if err != nil {
+		return "", err
+	}
+	availability, err := promptAvailability()
+	if err != nil {
+		return "", err
+	}
+	switch availability {
+	case "available":
+		return "available", nil
+	case "downloadable", "downloading":
+	default:
+		return availability, nil
+	}
+	session, err := awaitErr(api.Call("create", languageModelOptions()), 5*time.Minute)
+	if err != nil {
+		return "", fmt.Errorf("llm download: %w", err)
+	}
+	destroySession(session)
+	availability, err = promptAvailability()
+	if err != nil {
+		return "", err
+	}
+	return availability, nil
 }
 
 func promptOnce(prompt string) string {
