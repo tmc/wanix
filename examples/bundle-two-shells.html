@@ -393,7 +393,9 @@ $ ls</div>
             host.replaceChildren(term);
             await new Promise(resolve => requestAnimationFrame(resolve));
             term._system = system;
-            await term.connect();
+            term.connect().catch(error => {
+                console.error("connect rc terminal:", error);
+            });
             return {taskID, termPath};
         }
 
@@ -502,7 +504,23 @@ imported ${imported.entries} entries`);
             });
             const sourceFile = await source.root.readText("demo/proof.txt");
             setText("source-file", sourceFile.trim());
-            setText("source-state", JSON.stringify(sourceState, null, 2));
+            setText("source-state", JSON.stringify({worker: sourceState}, null, 2));
+
+            setStatus("starting source rc shell");
+            try {
+                result.shells.source = await startRCShell(source, "source-rc", "source-terminal");
+                setText("source-hint", "$ pwd\n$ export DEMO_ENV=source\n$ history");
+                await new Promise(resolve => setTimeout(resolve, 500));
+                await writeTerminal(source, result.shells.source.termPath, "pwd\nDEMO_ENV=source; export DEMO_ENV\nhistory\n");
+                result.sourceRCState = await waitFor("source rc checkpoint", async () => {
+                    const state = taskState(await source.root.bundleTaskStates(), result.shells.source.taskID);
+                    return state && state.env && state.env.some(line => line === "DEMO_ENV=source") ? state : null;
+                });
+                setText("source-state", JSON.stringify({worker: sourceState, rc: result.sourceRCState}, null, 2));
+            } catch (error) {
+                result.shellError = String(error && error.message || error);
+                setText("source-hint", "rc.wasm is not built. Run: make -C examples/repl-rc build");
+            }
 
             setStatus("exporting bundle from source");
             const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
@@ -522,23 +540,22 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
             });
             setText("target-task", `task ${taskID}`);
             setText("target-file", targetFile.trim());
-            setText("target-state", JSON.stringify(targetState, null, 2));
+            result.targetRCState = result.shells.source ? await waitFor("target rc checkpoint", async () => {
+                const state = taskState(await target.root.bundleTaskStates(), result.shells.source.taskID);
+                return state && state.env && state.env.some(line => line === "DEMO_ENV=source") ? state : null;
+            }) : null;
+            setText("target-state", JSON.stringify({worker: targetState, rc: result.targetRCState}, null, 2));
             setText("target-restore", `tasks ${JSON.stringify(restore.tasks || [])}`);
             $("transfer-button").disabled = false;
 
-            setStatus("starting rc shells");
+            setStatus("starting target rc shell");
             try {
-                result.shells.source = await startRCShell(source, "source-rc", "source-terminal");
                 result.shells.target = await startRCShell(target, "target-rc", "target-terminal");
-                setText("source-hint", "$ pwd\n$ cat proof.txt\n$ mkdir foo");
                 setText("target-hint", "$ pwd\n$ cat proof.txt\n$ ls");
                 await new Promise(resolve => setTimeout(resolve, 500));
-                const commands = "pwd\ncat proof.txt\n";
-                await writeTerminal(source, result.shells.source.termPath, commands);
-                await writeTerminal(target, result.shells.target.termPath, commands);
+                await writeTerminal(target, result.shells.target.termPath, "pwd\ncat proof.txt\n");
             } catch (error) {
                 result.shellError = String(error && error.message || error);
-                setText("source-hint", "rc.wasm is not built. Run: make -C examples/repl-rc build");
                 setText("target-hint", result.shellError);
             }
 
@@ -548,6 +565,9 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
                 sourceState.restored === false &&
                 targetState.counter === 7 &&
                 targetState.restored === true &&
+                result.targetRCState &&
+                result.targetRCState.env.includes("DEMO_ENV=source") &&
+                result.targetRCState.history.includes("DEMO_ENV=source; export DEMO_ENV") &&
                 (restore.tasks || []).includes(taskID) &&
                 !result.shellError;
             result.taskID = taskID;

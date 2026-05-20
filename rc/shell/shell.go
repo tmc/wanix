@@ -105,6 +105,7 @@ func runREPL(ctx context.Context, r *interp.Runner, parser *syntax.Parser, stdin
 			continue
 		}
 		state.addHistory(line)
+		state.recordLine(line)
 		state.setRunning(r.Dir)
 		if err := runSource(ctx, r, parser, "<stdin>", strings.NewReader(line+"\n")); err != nil {
 			var status interp.ExitStatus
@@ -285,6 +286,7 @@ type checkpointState struct {
 	atPrompt      bool
 	checkpointDir string
 	checkpointEnv []string
+	vars          map[string]string
 	historyLines  []string
 }
 
@@ -300,6 +302,7 @@ func newCheckpointState(checkpointDir string, checkpointEnv []string) *checkpoin
 		atPrompt:      true,
 		checkpointDir: checkpointDir,
 		checkpointEnv: append([]string(nil), checkpointEnv...),
+		vars:          envMap(checkpointEnv),
 	}
 }
 
@@ -336,6 +339,7 @@ func (s *checkpointState) load(data []byte) error {
 	defer s.mu.Unlock()
 	s.checkpointDir = saved.Dir
 	s.checkpointEnv = append(s.checkpointEnv[:0], saved.Env...)
+	s.vars = envMap(saved.Env)
 	s.historyLines = append(s.historyLines[:0], saved.History...)
 	s.trimHistoryLocked()
 	s.atPrompt = true
@@ -400,16 +404,57 @@ func (s *checkpointState) recordCall(args []string) {
 	defer s.mu.Unlock()
 	switch args[0] {
 	case "export":
-		for _, arg := range args[1:] {
-			name, value, ok := strings.Cut(arg, "=")
-			if !ok || name == "" {
-				continue
-			}
-			s.setEnvLocked(name, value)
-		}
+		s.recordExportLocked(args[1:])
 	case "unset":
 		for _, name := range args[1:] {
+			delete(s.vars, name)
 			s.unsetEnvLocked(name)
+		}
+	}
+}
+
+func (s *checkpointState) recordLine(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, part := range strings.Split(line, ";") {
+		fields := strings.Fields(strings.TrimSpace(part))
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "export":
+			s.recordExportLocked(fields[1:])
+		case "unset":
+			for _, name := range fields[1:] {
+				delete(s.vars, name)
+				s.unsetEnvLocked(name)
+			}
+		default:
+			if len(fields) != 1 {
+				continue
+			}
+			name, value, ok := strings.Cut(fields[0], "=")
+			if ok && name != "" {
+				s.vars[name] = value
+			}
+		}
+	}
+}
+
+func (s *checkpointState) recordExportLocked(args []string) {
+	for _, arg := range args {
+		name, value, ok := strings.Cut(arg, "=")
+		if name == "" {
+			continue
+		}
+		if ok {
+			s.vars[name] = value
+			s.setEnvLocked(name, value)
+			continue
+		}
+		value, ok = s.vars[name]
+		if ok {
+			s.setEnvLocked(name, value)
 		}
 	}
 }
@@ -433,6 +478,17 @@ func (s *checkpointState) unsetEnvLocked(name string) {
 			return
 		}
 	}
+}
+
+func envMap(env []string) map[string]string {
+	vars := make(map[string]string, len(env))
+	for _, pair := range env {
+		name, value, ok := strings.Cut(pair, "=")
+		if ok && name != "" {
+			vars[name] = value
+		}
+	}
+	return vars
 }
 
 func exitCodeForErr(stderr io.Writer, err error) int {

@@ -12,8 +12,7 @@ func TestCheckpointStateSavesPromptBoundary(t *testing.T) {
 	state := newCheckpointState("/home", []string{"PATH=/bin"})
 	state.addHistory("cd /tmp")
 	state.addHistory("export USER=glenda")
-	state.recordCall([]string{"export", "USER=glenda"})
-	state.recordCall([]string{"unset", "PATH"})
+	state.recordLine("USER=glenda; export USER; unset PATH")
 	state.setStatus("/tmp", 7)
 
 	data, err := state.save()
@@ -33,6 +32,22 @@ func TestCheckpointStateSavesPromptBoundary(t *testing.T) {
 	}
 	if got, want := saved.History, []string{"cd /tmp", "export USER=glenda"}; !equalStrings(got, want) {
 		t.Fatalf("history = %#v, want %#v", got, want)
+	}
+}
+
+func TestCheckpointStateTracksExportAssignments(t *testing.T) {
+	state := newCheckpointState("/", nil)
+	state.recordLine("FOO=bar")
+	if got := state.env(); len(got) != 0 {
+		t.Fatalf("env after unexported assignment = %#v, want empty", got)
+	}
+	state.recordLine("export FOO")
+	if got, want := state.env(), []string{"FOO=bar"}; !equalStrings(got, want) {
+		t.Fatalf("env = %#v, want %#v", got, want)
+	}
+	state.recordLine("export FOO=baz")
+	if got, want := state.env(), []string{"FOO=baz"}; !equalStrings(got, want) {
+		t.Fatalf("env = %#v, want %#v", got, want)
 	}
 }
 
