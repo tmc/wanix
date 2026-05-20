@@ -128,7 +128,7 @@ func TestCopyAll_Symlink(t *testing.T) {
 	}
 
 	// Verify symlink was copied
-	info, err := fs.Stat(fsys, "copylink.txt")
+	info, err := fs.Lstat(fsys, "copylink.txt")
 	if err != nil {
 		t.Fatalf("Failed to stat copied symlink: %v", err)
 	}
@@ -363,10 +363,12 @@ func TestCopyFS_DestinationIsDirectory(t *testing.T) {
 	srcFS.SetNode("file.txt", fskit.Entry("file.txt", 0644, []byte("content"), now))
 	dstFS.SetNode("existing_dir", fskit.Entry("existing_dir", fs.ModeDir|0755, now))
 
-	// Should succeed when destination is a directory (copies into it)
 	err := fs.CopyFS(srcFS, "file.txt", dstFS, "existing_dir")
-	if err != nil {
-		t.Fatalf("CopyFS should succeed when destination is directory: %v", err)
+	if err == nil {
+		t.Fatal("CopyFS overwrote existing directory")
+	}
+	if err.Error() != `will not overwrite "existing_dir"` {
+		t.Fatalf("CopyFS error = %v, want overwrite refusal", err)
 	}
 }
 

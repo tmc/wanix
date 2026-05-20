@@ -22,10 +22,11 @@ func CopyFS(srcFS FS, srcPath string, dstFS FS, dstPath string) error {
 	if srcErr != nil {
 		return srcErr
 	}
-	// dstInfo, dstErr := Lstat(dstFS, dstPath)
-	// if dstErr == nil && !dstInfo.IsDir() {
-	// 	return fmt.Errorf("will not overwrite %q", dstPath)
-	// }
+	if _, err := Lstat(dstFS, dstPath); err == nil {
+		return fmt.Errorf("will not overwrite %q", dstPath)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	switch mode := srcInfo.Mode(); mode & ModeType {
 	case os.ModeSymlink:
 		return copySymlink(srcFS, srcPath, dstFS, dstPath)
@@ -154,7 +155,7 @@ func copyFile(srcFS FS, srcPath string, dstFS FS, dstPath string, mode FileMode)
 	if !ok {
 		return fmt.Errorf("cannot copy %q to %q: dst not writable", srcPath, dstPath)
 	}
-	if _, e := io.Copy(wdstf, srcf); err != nil {
+	if _, e := io.Copy(wdstf, srcf); e != nil {
 		return fmt.Errorf("cannot copy %q to %q: %v", srcPath, dstPath, e)
 	}
 	return
