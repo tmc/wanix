@@ -244,17 +244,27 @@ func destroySession(session js.Value) {
 	destroy.Invoke()
 }
 
-func languageModelOptions() map[string]any {
-	return map[string]any{
-		"expectedInputs": []any{map[string]any{
-			"type":      "text",
-			"languages": []string{"en"},
-		}},
-		"expectedOutputs": []any{map[string]any{
-			"type":      "text",
-			"languages": []string{"en"},
-		}},
-	}
+func languageModelOptions() js.Value {
+	languages := js.Global().Get("Array").New(1)
+	languages.SetIndex(0, "en")
+
+	input := js.Global().Get("Object").New()
+	input.Set("type", "text")
+	input.Set("languages", languages)
+
+	output := js.Global().Get("Object").New()
+	output.Set("type", "text")
+	output.Set("languages", languages)
+
+	inputs := js.Global().Get("Array").New(1)
+	inputs.SetIndex(0, input)
+	outputs := js.Global().Get("Array").New(1)
+	outputs.SetIndex(0, output)
+
+	opts := js.Global().Get("Object").New()
+	opts.Set("expectedInputs", inputs)
+	opts.Set("expectedOutputs", outputs)
+	return opts
 }
 
 func awaitErr(promise js.Value, timeout time.Duration) (js.Value, error) {
