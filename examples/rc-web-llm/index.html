@@ -103,7 +103,7 @@
         </wanix-bind>
 
         <wanix-task id="shell" cmd="rc.wasm llm.rc" type="gojs" term start></wanix-task>
-        <wanix-term id="shell-term"></wanix-term>
+        <wanix-term id="shell-term" path="#term/pending"></wanix-term>
     </wanix-system>
     <script type="module">
         const system = document.querySelector("wanix-system");
@@ -115,6 +115,8 @@
         const download = document.querySelector("#download");
         const downloadButton = document.querySelector("#download-button");
         const details = document.querySelector("#details");
+
+        term._awake = () => {};
 
         async function readText(name) {
             return decoder.decode(await system.root.readFile(name)).trim();
