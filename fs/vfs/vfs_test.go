@@ -460,6 +460,41 @@ func TestExportManifestSkipsTaskSelfBind(t *testing.T) {
 	}
 }
 
+func TestExportManifestSkipsTaskRuntimeBinds(t *testing.T) {
+	root := newManifestFS("root")
+	term := newManifestFS("term")
+
+	ns := New(context.Background())
+	if err := ns.Bind(root, ".", ".", ModeReplace); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range []string{
+		"#task/self/term",
+		"#task/2/term",
+		"#task/source-rc/term",
+		"#task/2/fd/0",
+	} {
+		if err := ns.Bind(term, ".", dst, ModeReplace); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	manifest, err := ns.ExportManifest("task1", func(candidate fs.FS) (string, error) {
+		if candidate == root {
+			return "root", nil
+		}
+		return "", migration.ErrUnknownFilesystem
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bind := range manifest.Binds {
+		if strings.HasPrefix(bind.DstPath, "#task/") {
+			t.Fatalf("manifest includes dynamic task bind: %#v", manifest.Binds)
+		}
+	}
+}
+
 func TestExportManifestUnknownFilesystem(t *testing.T) {
 	ns := New(context.Background())
 	if err := ns.Bind(newManifestFS("known"), ".", "mnt", ModeReplace); err != nil {

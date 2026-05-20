@@ -19,6 +19,7 @@ import (
 	"tractor.dev/wanix/fs/memfs"
 	"tractor.dev/wanix/fs/vfs"
 	"tractor.dev/wanix/migration"
+	"tractor.dev/wanix/term"
 	"tractor.dev/wanix/vm"
 )
 
@@ -91,6 +92,86 @@ func TestBundleFilesystemResolverExportsManifest(t *testing.T) {
 	}
 	if string(data) != "nested" {
 		t.Fatalf("sub filesystem data = %q, want nested", data)
+	}
+}
+
+func TestBundleManifestWithTerminalBindsReturns(t *testing.T) {
+	root, _ := newBundleAPIRoot(t)
+	termdev := term.New(root)
+	if err := root.NS().Bind(termdev, ".", "#term"); err != nil {
+		t.Fatal(err)
+	}
+	taskID := strings.TrimSpace(string(mustReadFile(t, root.NS(), "#task/new/auto")))
+	taskPath := "#task/" + taskID
+	if err := fs.WriteFile(root.NS(), taskPath+"/cmd", []byte("rc.wasm"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(root.NS(), taskPath+"/alias", []byte("source-rc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.WriteFile(root.NS(), taskPath+"/dir", []byte("demo"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task, err := root.Lookup(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Bind(taskPath, "#task/self"); err != nil {
+		t.Fatal(err)
+	}
+	termID := strings.TrimSpace(string(mustReadFile(t, root.NS(), "#term/new")))
+	termPath := "#term/" + termID
+	if err := root.NS().Bind(termdev, termID, taskPath+"/term"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.NS().Bind(termdev, termID, "#task/source-rc/term"); err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Bind(termPath, "#task/self/term"); err != nil {
+		t.Fatal(err)
+	}
+	for _, fd := range []string{"0", "1", "2"} {
+		if err := task.Bind(termPath+"/program", taskPath+"/fd/"+fd); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	descs := []migration.FilesystemDescriptor{{
+		ID:     "rootfs",
+		Kind:   "memfs",
+		Source: "mnt",
+	}, {
+		ID:     "taskfs",
+		Kind:   "taskfs",
+		Source: "#task",
+	}, {
+		ID:     "termfs",
+		Kind:   "system",
+		Source: "#term",
+	}, {
+		ID:     "wanixfs",
+		Kind:   "system",
+		Source: "#wanix",
+	}}
+	resolver, err := bundleFilesystemResolver(root.Context(), root.NS(), descs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := root.BundleManifest(wanix.BundleManifestOptions{
+			Filesystems: descs,
+			Resolve:     resolver,
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("BundleManifest did not return")
 	}
 }
 
@@ -1025,6 +1106,15 @@ func newBundleAPIRoot(t *testing.T) (*wanix.Task, fs.FS) {
 		t.Fatal(err)
 	}
 	return root, backing
+}
+
+func mustReadFile(t *testing.T, fsys fs.FS, name string) []byte {
+	t.Helper()
+	data, err := fs.ReadFile(fsys, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func bindBundleAPIVMDevice(t *testing.T, root *wanix.Task) *vm.Device {

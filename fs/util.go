@@ -82,5 +82,11 @@ func AppendFile(fsys FS, filename string, data []byte) error {
 }
 
 func Equal(a, b FS) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if ta, tb := reflect.TypeOf(a), reflect.TypeOf(b); ta == tb && ta.Comparable() {
+		return a == b
+	}
 	return reflect.DeepEqual(a, b)
 }

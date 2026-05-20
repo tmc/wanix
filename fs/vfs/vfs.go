@@ -344,7 +344,7 @@ func (ns *NS) ExportManifest(taskID string, resolve FSIDResolver) (migration.Nam
 
 	out := migration.NamespaceManifest{TaskID: taskID}
 	for _, dstPath := range paths {
-		if dstPath == "#task/self" {
+		if skipTaskRuntimeBind(dstPath) {
 			continue
 		}
 		for i, ref := range b[dstPath] {
@@ -367,6 +367,10 @@ func (ns *NS) ExportManifest(taskID string, resolve FSIDResolver) (migration.Nam
 		}
 	}
 	return out, nil
+}
+
+func skipTaskRuntimeBind(dstPath string) bool {
+	return dstPath == "#task/self" || strings.HasPrefix(dstPath, "#task/")
 }
 
 // ImportManifest rebuilds a namespace from a migration manifest.

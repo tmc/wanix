@@ -58,7 +58,7 @@
             min-width: 0;
             min-height: 0;
             display: grid;
-            grid-template-rows: auto auto minmax(240px, 1fr) auto;
+            grid-template-rows: auto auto minmax(240px, 1fr) auto auto;
             gap: 12px;
             padding: 18px;
         }
@@ -90,7 +90,7 @@
         }
         .facts {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 8px;
         }
         .fact {
@@ -116,6 +116,11 @@
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 12px;
             line-height: 1.35;
+        }
+        .checkpoint-fact {
+            min-height: 92px;
+            max-height: 180px;
+            overflow: auto;
         }
         .terminal-wrap {
             min-height: 0;
@@ -256,16 +261,16 @@
                         <code id="source-file">pending</code>
                     </div>
                     <div class="fact">
-                        <b>Checkpoint</b>
-                        <code id="source-state">pending</code>
-                    </div>
-                    <div class="fact">
                         <b>Bundle</b>
                         <code id="source-bundle">pending</code>
                     </div>
                 </div>
                 <div class="terminal-wrap" id="source-terminal">
                     <div class="terminal-empty">source rc shell opens in demo after export</div>
+                </div>
+                <div class="fact checkpoint-fact">
+                    <b>Checkpoint</b>
+                    <code id="source-state">pending</code>
                 </div>
                 <div class="hint" id="source-hint">$ pwd
 $ cat proof.txt
@@ -293,16 +298,16 @@ $ mkdir foo</div>
                         <code id="target-file">pending</code>
                     </div>
                     <div class="fact">
-                        <b>Checkpoint</b>
-                        <code id="target-state">pending</code>
-                    </div>
-                    <div class="fact">
                         <b>Restore</b>
                         <code id="target-restore">pending</code>
                     </div>
                 </div>
                 <div class="terminal-wrap" id="target-terminal">
                     <div class="terminal-empty">target rc shell opens in demo after import</div>
+                </div>
+                <div class="fact checkpoint-fact">
+                    <b>Checkpoint</b>
+                    <code id="target-state">pending</code>
                 </div>
                 <div class="hint" id="target-hint">$ pwd
 $ cat proof.txt
@@ -311,10 +316,10 @@ $ ls</div>
         </div>
     </main>
 
-    <wanix-system id="source" class="runtime" wasm="../dist/wanix.debug.wasm" debug>
+    <wanix-system id="source" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=task-runtime-binds" debug>
         <wanix-bind dst="." src="#ramfs"></wanix-bind>
     </wanix-system>
-    <wanix-system id="target" class="runtime" wasm="../dist/wanix.debug.wasm" debug>
+    <wanix-system id="target" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=task-runtime-binds" debug>
         <wanix-bind dst="." src="#ramfs"></wanix-bind>
     </wanix-system>
 
@@ -336,6 +341,7 @@ $ ls</div>
         }
 
         function setStatus(text) {
+            console.log(`[wanix-demo] ${text}`);
             $("status").textContent = text;
         }
 
@@ -460,7 +466,12 @@ $ ls</div>
                 return await Promise.race([
                     fn(),
                     new Promise((_, reject) => {
-                        timer = setTimeout(() => reject(new Error(`${label}: timeout`)), timeoutMs);
+                        timer = setTimeout(() => {
+                            const error = new Error(`${label}: timeout`);
+                            console.error("[wanix-demo]", error);
+                            setText("transfer-log", error.message);
+                            reject(error);
+                        }, timeoutMs);
                     }),
                 ]);
             } finally {
@@ -686,6 +697,8 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
             });
             setStatus("booting source and target");
             await Promise.all([ready(source), ready(target)]);
+            source.root.logger = message => console.log(`[wanix-demo source] ${message}`);
+            target.root.logger = message => console.log(`[wanix-demo target] ${message}`);
 
             setStatus("creating source workload");
             await source.root.makeDirAll("demo");
@@ -794,7 +807,9 @@ states ${bundle.states.map(state => `${state.kind || "state"}:${state.id}`).join
             result.ok = false;
             result.error = String(error && error.message || error);
             result.stack = String(error && error.stack || "");
+            console.error("[wanix-demo] failed", error);
             setStatus("demo failed");
+            setText("transfer-log", result.error);
             document.body.dataset.result = JSON.stringify(result);
             return result;
         });
