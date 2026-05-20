@@ -598,6 +598,13 @@ imported ${imported.entries} entries`);
                 throw new Error("target system is not ready");
             }
             setStatus(`importing ${label}`);
+            for (const archive of bundle.archives || []) {
+                const desc = (bundle.manifest.filesystems || []).find(desc => desc.id === archive.id);
+                const target = archive.target || (desc && desc.archive_target) || archive.source || (desc && desc.source);
+                if (target) {
+                    await removeAllIfPresent(targetSystem.root, target);
+                }
+            }
             const restore = await targetSystem.root.importBundle(bundle);
             const targetFile = await targetSystem.root.readText("demo/proof.txt");
             setText("target-file", targetFile.trim());
