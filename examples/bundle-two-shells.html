@@ -172,6 +172,32 @@
             background: #293221;
             border-color: #64764d;
         }
+        .bundle-actions {
+            width: 100%;
+            display: grid;
+            gap: 8px;
+        }
+        .bundle-action {
+            width: 100%;
+            min-height: 34px;
+            border: 1px solid #3e4934;
+            background: #20261c;
+            color: #d8e5c9;
+            font: inherit;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .bundle-action:disabled {
+            cursor: default;
+            opacity: .55;
+        }
+        .bundle-action:not(:disabled):hover {
+            background: #293221;
+            border-color: #64764d;
+        }
+        .bundle-file {
+            display: none;
+        }
         .transfer pre {
             margin: 0;
             width: 100%;
@@ -248,6 +274,11 @@ $ mkdir foo</div>
 
             <div class="transfer">
                 <button class="arrow" id="transfer-button" type="button" disabled title="Re-export demo files">→</button>
+                <div class="bundle-actions">
+                    <button class="bundle-action" id="download-bundle" type="button" disabled>Download bundle</button>
+                    <button class="bundle-action" id="upload-bundle" type="button">Load bundle</button>
+                    <input class="bundle-file" id="bundle-file" type="file" accept="application/json,.json"/>
+                </div>
                 <pre id="transfer-log">waiting</pre>
             </div>
 
@@ -298,6 +329,7 @@ $ ls</div>
         let targetSystem;
         let syncBusy = false;
         let syncCount = 0;
+        let currentBundle = null;
 
         function $(id) {
             return document.getElementById(id);
@@ -309,6 +341,86 @@ $ ls</div>
 
         function setText(id, text) {
             $(id).textContent = text;
+        }
+
+        function bytesToBase64(data) {
+            const bytes = bundleBytes(data);
+            let binary = "";
+            for (let i = 0; i < bytes.length; i += 0x8000) {
+                binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+            }
+            return btoa(binary);
+        }
+
+        function base64ToBytes(text) {
+            const binary = atob(text || "");
+            const out = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+                out[i] = binary.charCodeAt(i);
+            }
+            return out;
+        }
+
+        function bundleBytes(data) {
+            if (data instanceof Uint8Array) {
+                return data;
+            }
+            if (data instanceof ArrayBuffer) {
+                return new Uint8Array(data);
+            }
+            if (ArrayBuffer.isView(data)) {
+                return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+            }
+            if (typeof data === "string") {
+                return encoder.encode(data);
+            }
+            return new Uint8Array(0);
+        }
+
+        function encodeBundle(bundle) {
+            return {
+                version: 1,
+                manifest: bundle.manifest,
+                archives: (bundle.archives || []).map(archive => ({
+                    ...archive,
+                    data: bytesToBase64(archive.data),
+                    encoding: "base64",
+                })),
+                states: (bundle.states || []).map(state => ({
+                    ...state,
+                    data: bytesToBase64(state.data),
+                    encoding: "base64",
+                })),
+            };
+        }
+
+        function decodeBundle(encoded) {
+            if (!encoded || encoded.version !== 1) {
+                throw new Error("unsupported bundle file");
+            }
+            return {
+                manifest: encoded.manifest,
+                archives: (encoded.archives || []).map(({encoding, data, ...archive}) => ({
+                    ...archive,
+                    data: encoding === "base64" ? base64ToBytes(data) : data,
+                })),
+                states: (encoded.states || []).map(({encoding, data, ...state}) => ({
+                    ...state,
+                    data: encoding === "base64" ? base64ToBytes(data) : data,
+                })),
+            };
+        }
+
+        function downloadBundle(bundle) {
+            const blob = new Blob([JSON.stringify(encodeBundle(bundle), null, 2)], {type: "application/json"});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `wanix-bundle-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+            document.body.append(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
         }
 
         function ready(el) {
@@ -456,6 +568,28 @@ imported ${imported.entries} entries`);
             }
         }
 
+        async function importBundleIntoTarget(bundle, label="uploaded bundle") {
+            if (!targetSystem) {
+                throw new Error("target system is not ready");
+            }
+            setStatus(`importing ${label}`);
+            const restore = await targetSystem.root.importBundle(bundle);
+            const targetFile = await targetSystem.root.readText("demo/proof.txt");
+            setText("target-file", targetFile.trim());
+            setText("target-restore", `loaded ${label}\ntasks ${JSON.stringify(restore.tasks || [])}`);
+            setText("transfer-log", `loaded ${label}
+archives ${(bundle.archives || []).map(archive => archive.id).join(", ")}
+states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id}`).join(", ")}`);
+            result.uploadRestore = restore;
+            result.uploadedBundle = {
+                archives: (bundle.archives || []).length,
+                states: (bundle.states || []).length,
+            };
+            document.body.dataset.result = JSON.stringify(result);
+            setStatus(`${label} loaded`);
+            return restore;
+        }
+
         async function writeTerminal(system, termPath, text) {
             const stream = await system.root.openWritable([termPath, "data"].join("/"));
             const writer = stream.getWriter();
@@ -473,6 +607,32 @@ imported ${imported.entries} entries`);
             targetSystem = target;
             $("transfer-button").addEventListener("click", () => {
                 resyncDemoDirectory().catch(error => console.error("resync demo directory:", error));
+            });
+            $("download-bundle").addEventListener("click", () => {
+                if (currentBundle) {
+                    downloadBundle(currentBundle);
+                }
+            });
+            $("upload-bundle").addEventListener("click", () => {
+                $("bundle-file").click();
+            });
+            $("bundle-file").addEventListener("change", async event => {
+                const file = event.target.files && event.target.files[0];
+                event.target.value = "";
+                if (!file) {
+                    return;
+                }
+                try {
+                    const bundle = decodeBundle(JSON.parse(await file.text()));
+                    currentBundle = bundle;
+                    $("download-bundle").disabled = false;
+                    await importBundleIntoTarget(bundle, file.name);
+                } catch (error) {
+                    result.uploadError = String(error && error.message || error);
+                    setStatus("bundle load failed");
+                    setText("transfer-log", result.uploadError);
+                    document.body.dataset.result = JSON.stringify(result);
+                }
             });
             setStatus("booting source and target");
             await Promise.all([ready(source), ready(target)]);
@@ -526,6 +686,8 @@ imported ${imported.entries} entries`);
             const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
                 {id: "rootfs", source: "."},
             ]));
+            currentBundle = bundle;
+            $("download-bundle").disabled = false;
             setText("source-bundle", `${bundle.archives.length} archive(s)\n${bundle.states.length} state payload(s)`);
             setText("transfer-log", `manifest ${bundle.manifest.version}
 archives ${bundle.archives.map(archive => archive.id).join(", ")}
