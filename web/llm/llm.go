@@ -355,7 +355,9 @@ func ensureModel() (string, error) {
 	switch availability {
 	case "available":
 		return "available", nil
-	case "downloadable", "downloading":
+	case "downloadable":
+	case "downloading":
+		return "downloading", nil
 	default:
 		return availability, nil
 	}

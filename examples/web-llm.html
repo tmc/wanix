@@ -148,7 +148,7 @@
     </style>
 </head>
 <body>
-    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=5" debug></wanix-system>
+    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=6" debug></wanix-system>
 
     <main>
         <h1>Wanix Web LLM</h1>
@@ -217,7 +217,7 @@
             return JSON.parse(decoder.decode(await system.root.readFile("#web/llm/status")));
         }
 
-        async function refreshAvailability() {
+        async function refreshAvailability(busy = false) {
             const llmStatus = await readStatus();
             const availability = llmStatus.availability || await readAvailability();
             status.textContent = `LanguageModel: ${availability}`;
@@ -226,8 +226,11 @@
             details.textContent = JSON.stringify(llmStatus, null, 2);
             dot.classList.toggle("ready", availability === "available");
             dot.classList.toggle("blocked", availability !== "available");
-            download.disabled = availability !== "downloadable" && availability !== "downloading";
-            run.disabled = false;
+            if (!busy) {
+                download.disabled = availability !== "downloadable" && availability !== "downloading";
+                run.disabled = false;
+            }
+            return llmStatus;
         }
 
         system.addEventListener("ready", async () => {
@@ -237,16 +240,39 @@
         download.addEventListener("click", async () => {
             download.disabled = true;
             run.disabled = true;
-            output.textContent = "starting model download";
+            const started = Date.now();
+            let active = true;
+            output.textContent = "starting model setup";
+            const progress = async () => {
+                if (!active) {
+                    return;
+                }
+                const elapsed = Math.round((Date.now() - started) / 1000);
+                try {
+                    const llmStatus = await refreshAvailability(true);
+                    const availability = llmStatus.availability || "unknown";
+                    downloadStatus.textContent = `${availability} (${elapsed}s)`;
+                    output.textContent = `model setup in progress\navailability: ${availability}\nelapsed: ${elapsed}s`;
+                } catch (err) {
+                    downloadStatus.textContent = `status check failed (${elapsed}s)`;
+                    output.textContent = `model setup in progress\nstatus check failed: ${err}\nelapsed: ${elapsed}s`;
+                }
+            };
+            const interval = setInterval(progress, 2000);
+            await progress();
             try {
                 const result = decoder.decode(await system.root.readFile("#web/llm/download")).trim();
+                active = false;
                 downloadStatus.textContent = result;
                 output.textContent = result;
                 await refreshAvailability();
             } catch (err) {
+                active = false;
                 downloadStatus.textContent = String(err);
                 output.textContent = String(err);
             } finally {
+                active = false;
+                clearInterval(interval);
                 run.disabled = false;
             }
         });
