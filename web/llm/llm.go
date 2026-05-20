@@ -6,6 +6,7 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			fskit.Entry("availability", 0444),
 			fskit.Entry("download", 0777),
 			fskit.Entry("prompt", 0777),
+			fskit.Entry("status", 0444),
 		), nil
 	case "availability":
 		return &fskit.FuncFile{
@@ -63,9 +65,34 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		return newDownloadFile(name), nil
 	case "prompt":
 		return newPromptFile(name), nil
+	case "status":
+		return &fskit.FuncFile{
+			Node: fskit.Entry("status", 0444),
+			ReadFunc: func(n *fskit.Node) error {
+				status, err := promptStatus()
+				if err != nil {
+					fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
+					return nil
+				}
+				data, err := json.MarshalIndent(status, "", "  ")
+				if err != nil {
+					return err
+				}
+				fskit.SetData(n, append(data, '\n'))
+				return nil
+			},
+		}, nil
 	default:
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
+}
+
+type Status struct {
+	API          string `json:"api"`
+	Availability string `json:"availability"`
+	Error        string `json:"error,omitempty"`
+	UserAgent    string `json:"user_agent"`
+	Chrome       string `json:"chrome,omitempty"`
 }
 
 type downloadFile struct {
@@ -286,6 +313,28 @@ func promptAvailability() (string, error) {
 	return availability.String(), nil
 }
 
+func promptStatus() (Status, error) {
+	status := Status{
+		API:       "missing",
+		UserAgent: js.Global().Get("navigator").Get("userAgent").String(),
+		Chrome:    chromeBrands(),
+	}
+	if _, err := promptAPI(); err != nil {
+		status.Availability = "unavailable"
+		status.Error = err.Error()
+		return status, nil
+	}
+	status.API = "LanguageModel"
+	availability, err := promptAvailability()
+	if err != nil {
+		status.Availability = "error"
+		status.Error = err.Error()
+		return status, nil
+	}
+	status.Availability = availability
+	return status, nil
+}
+
 func downloadOnce() string {
 	status, err := ensureModel()
 	if err != nil {
@@ -320,6 +369,34 @@ func ensureModel() (string, error) {
 		return "", err
 	}
 	return availability, nil
+}
+
+func chromeBrands() string {
+	brands := js.Global().Get("navigator").Get("userAgentData").Get("brands")
+	if brands.IsUndefined() || brands.IsNull() {
+		return ""
+	}
+	data, err := jsonStringify(brands)
+	if err != nil {
+		return ""
+	}
+	return data
+}
+
+func jsonStringify(v js.Value) (string, error) {
+	result, err := awaitErr(js.Global().Get("Promise").Call("resolve", js.Global().Get("JSON").Call("stringify", v)), time.Second)
+	if err != nil {
+		return "", err
+	}
+	return result.String(), nil
+}
+
+func quoteJSON(s string) string {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(data)
 }
 
 func promptOnce(prompt string) string {

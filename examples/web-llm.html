@@ -94,6 +94,35 @@
             background: #ffffff;
             font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
         }
+        .diagnostics {
+            display: grid;
+            gap: 10px;
+            margin: 18px 0;
+        }
+        .diag-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+        .diag {
+            border: 1px solid #c7ced8;
+            border-radius: 8px;
+            padding: 10px 12px;
+            background: #ffffff;
+        }
+        .diag b {
+            display: block;
+            margin-bottom: 4px;
+            color: #4b5563;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
         @media (prefers-color-scheme: dark) {
             :root {
                 background: #101418;
@@ -103,9 +132,13 @@
                 color: #aeb7c3;
             }
             textarea,
-            output {
+            output,
+            .diag {
                 border-color: #394351;
                 background: #151b22;
+            }
+            .diag b {
+                color: #aeb7c3;
             }
             button {
                 background: #e5e7eb;
@@ -115,7 +148,7 @@
     </style>
 </head>
 <body>
-    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=4" debug></wanix-system>
+    <wanix-system wasm="../dist/wanix.debug.wasm?web-llm=5" debug></wanix-system>
 
     <main>
         <h1>Wanix Web LLM</h1>
@@ -123,6 +156,14 @@
             <span id="dot" class="dot"></span>
             <span id="status">starting wanix</span>
         </div>
+        <section class="diagnostics">
+            <div class="diag-grid">
+                <div class="diag"><b>Availability</b><span id="availability">pending</span></div>
+                <div class="diag"><b>API</b><span id="api">pending</span></div>
+                <div class="diag"><b>Download</b><span id="download-status">not started</span></div>
+            </div>
+            <div class="diag"><b>Details</b><pre id="details"></pre></div>
+        </section>
         <form id="prompt-form">
             <textarea id="prompt">Write one sentence about filesystems as APIs.</textarea>
             <div class="actions">
@@ -142,6 +183,10 @@
         const status = document.querySelector("#status");
         const dot = document.querySelector("#dot");
         const output = document.querySelector("#output");
+        const availabilityNode = document.querySelector("#availability");
+        const apiNode = document.querySelector("#api");
+        const downloadStatus = document.querySelector("#download-status");
+        const details = document.querySelector("#details");
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
 
@@ -168,9 +213,17 @@
             return decoder.decode(await system.root.readFile("#web/llm/availability")).trim();
         }
 
+        async function readStatus() {
+            return JSON.parse(decoder.decode(await system.root.readFile("#web/llm/status")));
+        }
+
         async function refreshAvailability() {
-            const availability = await readAvailability();
+            const llmStatus = await readStatus();
+            const availability = llmStatus.availability || await readAvailability();
             status.textContent = `LanguageModel: ${availability}`;
+            availabilityNode.textContent = availability;
+            apiNode.textContent = llmStatus.api || "unknown";
+            details.textContent = JSON.stringify(llmStatus, null, 2);
             dot.classList.toggle("ready", availability === "available");
             dot.classList.toggle("blocked", availability !== "available");
             download.disabled = availability !== "downloadable" && availability !== "downloading";
@@ -186,9 +239,12 @@
             run.disabled = true;
             output.textContent = "starting model download";
             try {
-                output.textContent = decoder.decode(await system.root.readFile("#web/llm/download"));
+                const result = decoder.decode(await system.root.readFile("#web/llm/download")).trim();
+                downloadStatus.textContent = result;
+                output.textContent = result;
                 await refreshAvailability();
             } catch (err) {
+                downloadStatus.textContent = String(err);
                 output.textContent = String(err);
             } finally {
                 run.disabled = false;

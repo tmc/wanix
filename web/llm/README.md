@@ -11,6 +11,8 @@ Files:
   `downloading`, then destroys the session and reports the new availability.
 - `prompt`: executable and read/write. Write one newline-terminated prompt and
   read one newline-terminated response from the same open file.
+- `status`: read-only JSON with API presence, availability, user agent, and
+  last availability error when available.
 
 The implementation uses `globalThis.LanguageModel.availability()`,
 `LanguageModel.create()`, and `session.prompt()`. If the browser does not
@@ -30,6 +32,7 @@ From rc:
 
 ```sh
 cat web/llm/availability
+cat web/llm/status
 cat web/llm/download
 echo 'Write one sentence about filesystems as APIs.' > prompt.txt
 openfile web/llm/prompt < prompt.txt
