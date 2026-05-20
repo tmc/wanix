@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <script type="module" src="../dist/wanix.min.js"></script>
+    <style>
+        :root {
+            color-scheme: light dark;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f6f7f8;
+            color: #171a1f;
+        }
+        body {
+            margin: 0;
+            min-height: 100vh;
+        }
+        main {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 32px 20px;
+        }
+        h1 {
+            margin: 0 0 18px;
+            font-size: 28px;
+            font-weight: 650;
+            letter-spacing: 0;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 18px;
+            color: #4b5563;
+            font-size: 14px;
+        }
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #9ca3af;
+            flex: 0 0 auto;
+        }
+        .dot.ready {
+            background: #0f8b4c;
+        }
+        .dot.blocked {
+            background: #b45309;
+        }
+        form {
+            display: grid;
+            gap: 12px;
+        }
+        textarea {
+            box-sizing: border-box;
+            width: 100%;
+            min-height: 132px;
+            resize: vertical;
+            border: 1px solid #c7ced8;
+            border-radius: 8px;
+            padding: 14px;
+            font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            background: #ffffff;
+            color: inherit;
+        }
+        button {
+            justify-self: start;
+            border: 0;
+            border-radius: 8px;
+            padding: 10px 16px;
+            background: #1f2937;
+            color: white;
+            font: inherit;
+            cursor: pointer;
+        }
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.55;
+        }
+        output {
+            display: block;
+            box-sizing: border-box;
+            margin-top: 18px;
+            min-height: 160px;
+            white-space: pre-wrap;
+            border: 1px solid #c7ced8;
+            border-radius: 8px;
+            padding: 14px;
+            background: #ffffff;
+            font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                background: #101418;
+                color: #eef2f7;
+            }
+            .status {
+                color: #aeb7c3;
+            }
+            textarea,
+            output {
+                border-color: #394351;
+                background: #151b22;
+            }
+            button {
+                background: #e5e7eb;
+                color: #111827;
+            }
+        }
+    </style>
+</head>
+<body>
+    <wanix-system wasm="../dist/wanix.debug.wasm" debug></wanix-system>
+
+    <main>
+        <h1>Wanix Web LLM</h1>
+        <div class="status">
+            <span id="dot" class="dot"></span>
+            <span id="status">starting wanix</span>
+        </div>
+        <form id="prompt-form">
+            <textarea id="prompt">Write one sentence about filesystems as APIs.</textarea>
+            <button id="run" type="submit" disabled>Run prompt</button>
+        </form>
+        <output id="output"></output>
+    </main>
+
+    <script type="module">
+        const system = document.querySelector("wanix-system");
+        const form = document.querySelector("#prompt-form");
+        const prompt = document.querySelector("#prompt");
+        const run = document.querySelector("#run");
+        const status = document.querySelector("#status");
+        const dot = document.querySelector("#dot");
+        const output = document.querySelector("#output");
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+
+        async function readText(fd) {
+            const chunks = [];
+            for (;;) {
+                const chunk = await system.root.read(fd, 4096);
+                if (chunk === null) {
+                    break;
+                }
+                chunks.push(chunk);
+            }
+            const length = chunks.reduce((n, chunk) => n + chunk.length, 0);
+            const data = new Uint8Array(length);
+            let offset = 0;
+            for (const chunk of chunks) {
+                data.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return decoder.decode(data);
+        }
+
+        async function readAvailability() {
+            return decoder.decode(await system.root.readFile("#web/llm/availability")).trim();
+        }
+
+        system.addEventListener("ready", async () => {
+            const availability = await readAvailability();
+            status.textContent = `LanguageModel: ${availability}`;
+            dot.classList.toggle("ready", availability === "available");
+            dot.classList.toggle("blocked", availability !== "available");
+            run.disabled = false;
+        });
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            run.disabled = true;
+            output.textContent = "";
+            try {
+                const fd = await system.root.open("#web/llm/prompt");
+                await system.root.write(fd, encoder.encode(prompt.value + "\n"));
+                output.textContent = await readText(fd);
+                await system.root.close(fd);
+            } catch (err) {
+                output.textContent = String(err);
+            } finally {
+                run.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

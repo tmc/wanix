@@ -42,7 +42,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	case ".":
 		return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
-			fskit.Entry("prompt", 0666),
+			fskit.Entry("prompt", 0777),
 		), nil
 	case "availability":
 		return &fskit.FuncFile{
@@ -89,7 +89,7 @@ func newPromptFile(name string) *promptFile {
 }
 
 func (f *promptFile) Stat() (fs.FileInfo, error) {
-	return fskit.Entry(path.Base(f.name), 0666), nil
+	return fskit.Entry(path.Base(f.name), 0777), nil
 }
 
 func (f *promptFile) Read(b []byte) (int, error) {
