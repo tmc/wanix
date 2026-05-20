@@ -454,6 +454,20 @@ $ ls</div>
             throw new Error(`${label}: ${last ? last.message || last : "timeout"}`);
         }
 
+        async function withTimeout(label, timeoutMs, fn) {
+            let timer;
+            try {
+                return await Promise.race([
+                    fn(),
+                    new Promise((_, reject) => {
+                        timer = setTimeout(() => reject(new Error(`${label}: timeout`)), timeoutMs);
+                    }),
+                ]);
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+
         function taskState(states, id) {
             const state = states.find(state => state.id === id);
             if (!state) {
@@ -590,6 +604,42 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
             return restore;
         }
 
+        async function exportDemoBundle(root, filesystems) {
+            setStatus("exporting bundle manifest");
+            const manifest = await withTimeout("bundle manifest", 10000, () => root.bundleManifest(filesystems));
+
+            setStatus("exporting VM states");
+            const vmStates = await withTimeout("bundle VM states", 10000, () => root.bundleVMStates());
+            if (vmStates.length) {
+                manifest.vms = vmStates.map(({data, ...vm}) => vm);
+            }
+
+            setStatus("exporting task states");
+            const taskStates = await withTimeout("bundle task states", 10000, () => root.bundleTaskStates());
+            if (taskStates.length) {
+                const tasks = new Map((manifest.tasks || []).map(task => [task.id, task]));
+                for (const state of taskStates) {
+                    const task = tasks.get(state.id);
+                    if (task && state.state_path) {
+                        task.state_path = state.state_path;
+                    }
+                }
+            }
+
+            setStatus("archiving demo files");
+            const demoArchive = await withTimeout("archive demo", 10000, () => root.archive("demo"));
+            const archives = [{id: "rootfs", source: "demo", target: "demo", filesystem_source: ".", data: demoArchive}];
+            const states = [
+                ...vmStates
+                    .filter(state => state.state_path && state.data)
+                    .map(state => ({kind: "vm", id: state.id, path: state.state_path, data: state.data})),
+                ...taskStates
+                    .filter(state => state.state_path && state.data)
+                    .map(state => ({kind: "task", id: state.id, path: state.state_path, data: state.data})),
+            ];
+            return {manifest, archives, states};
+        }
+
         async function writeTerminal(system, termPath, text) {
             const stream = await system.root.openWritable([termPath, "data"].join("/"));
             const writer = stream.getWriter();
@@ -682,8 +732,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
                 setText("source-hint", "rc.wasm is not built. Run: make -C examples/repl-rc build");
             }
 
-            setStatus("exporting bundle from source");
-            const bundle = await source.root.exportBundle(window.WanixBundleFilesystems([
+            const bundle = await exportDemoBundle(source.root, window.WanixBundleFilesystems([
                 {id: "rootfs", source: ".", archive: "demo", archive_target: "demo", filesystem_source: "."},
             ]));
             currentBundle = bundle;

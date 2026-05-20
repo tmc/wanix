@@ -91,6 +91,27 @@ func TestTaskFDManifestsFailClosed(t *testing.T) {
 	}
 }
 
+func TestTaskFDManifestsStdioDoesNotStat(t *testing.T) {
+	file := &statFailFile{nonSeekFile{info: fskit.Entry("stdin", 0200)}}
+	fd := newOpenFile(file, "#task/1/fd/0", 0, true, true)
+
+	manifest, err := fd.manifest(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !manifest.Restorable || !manifest.Stdio {
+		t.Fatalf("stdio manifest = %#v, want restorable stdio", manifest)
+	}
+}
+
+type statFailFile struct {
+	nonSeekFile
+}
+
+func (f *statFailFile) Stat() (os.FileInfo, error) {
+	return nil, errors.New("stat should not be called")
+}
+
 func TestTaskFDManifestsPipeFailClosed(t *testing.T) {
 	root, err := NewRoot()
 	if err != nil {

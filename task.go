@@ -190,12 +190,12 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 		Offset: f.offset,
 		Stdio:  f.stdio,
 	}
-	if info, err := f.file.Stat(); err == nil {
-		m.Kind = fdKind(info.Mode())
-	}
 	if f.stdio {
 		m.Restorable = true
 		return m, nil
+	}
+	if info, err := f.file.Stat(); err == nil {
+		m.Kind = fdKind(info.Mode())
 	}
 	var reasons []string
 	if f.path == "" {
