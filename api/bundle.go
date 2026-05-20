@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"tractor.dev/toolkit-go/duplex/rpc"
 	"tractor.dev/wanix"
@@ -129,12 +130,32 @@ func bundleFilesystemResolver(ctx context.Context, ns *vfs.NS, descs []migration
 	}
 	return func(candidate fs.FS) (string, error) {
 		for _, ref := range refs {
-			if fs.Equal(ref.fsys, candidate) {
+			if sameBundleFilesystem(ref.fsys, candidate) {
 				return ref.id, nil
 			}
 		}
 		return "", migration.ErrUnknownFilesystem
 	}, nil
+}
+
+func sameBundleFilesystem(a, b fs.FS) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	ta, tb := reflect.TypeOf(a), reflect.TypeOf(b)
+	if ta != tb {
+		return false
+	}
+	if ta.Comparable() {
+		return a == b
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	switch va.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return va.Pointer() == vb.Pointer()
+	default:
+		return false
+	}
 }
 
 func bundleFilesystemLookup(ctx context.Context, ns *vfs.NS, descs []migration.FilesystemDescriptor) (vfs.FSIDLookup, error) {

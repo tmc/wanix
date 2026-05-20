@@ -316,10 +316,10 @@ $ ls</div>
         </div>
     </main>
 
-    <wanix-system id="source" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=task-runtime-binds" debug>
+    <wanix-system id="source" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=bundle-resolver-identity" debug>
         <wanix-bind dst="." src="#ramfs"></wanix-bind>
     </wanix-system>
-    <wanix-system id="target" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=task-runtime-binds" debug>
+    <wanix-system id="target" class="runtime" wasm="../dist/wanix.debug.wasm?fresh=bundle-resolver-identity" debug>
         <wanix-bind dst="." src="#ramfs"></wanix-bind>
     </wanix-system>
 
@@ -616,6 +616,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
         }
 
         async function exportDemoBundle(root, filesystems) {
+            console.log("[wanix-demo] bundle filesystems", JSON.stringify(filesystems));
             setStatus("exporting bundle manifest");
             const manifest = await withTimeout("bundle manifest", 10000, () => root.bundleManifest(filesystems));
 
@@ -649,6 +650,12 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
                     .map(state => ({kind: "task", id: state.id, path: state.state_path, data: state.data})),
             ];
             return {manifest, archives, states};
+        }
+
+        function demoBundleFilesystems() {
+            return window.WanixBundleFilesystems([
+                {id: "rootfs", source: ".", archive: "demo", archive_target: "demo", filesystem_source: "."},
+            ]);
         }
 
         async function writeTerminal(system, termPath, text) {
@@ -703,7 +710,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
             setStatus("creating source workload");
             await source.root.makeDirAll("demo");
             await source.root.writeFile("demo/proof.txt", "left side wrote this before export\n");
-            await source.root.writeFile("checkpoint-worker.js", `
+            await source.root.writeFile("demo/checkpoint-worker.js", `
                 const encoder = new TextEncoder();
                 const decoder = new TextDecoder();
                 let checkpoint = {counter: 7, label: "left", restored: false};
@@ -718,7 +725,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
                 });
             `);
             const taskID = await newTask(source.root, "js");
-            await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "checkpoint-worker.js");
+            await source.root.writeFile(["#task", taskID, "cmd"].join("/"), "demo/checkpoint-worker.js");
             await source.root.writeFile(["#task", taskID, "ctl"].join("/"), "start");
             setText("source-task", `task ${taskID}`);
 
@@ -745,9 +752,7 @@ states ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id
                 setText("source-hint", "rc.wasm is not built. Run: make -C examples/repl-rc build");
             }
 
-            const bundle = await exportDemoBundle(source.root, window.WanixBundleFilesystems([
-                {id: "rootfs", source: ".", archive: "demo", archive_target: "demo", filesystem_source: "."},
-            ]));
+            const bundle = await exportDemoBundle(source.root, demoBundleFilesystems());
             currentBundle = bundle;
             $("download-bundle").disabled = false;
             setText("source-bundle", `${bundle.archives.length} archive(s)\n${bundle.states.length} state payload(s)`);
