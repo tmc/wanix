@@ -3,9 +3,11 @@ package wanix
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"tractor.dev/wanix/fs"
 	"tractor.dev/wanix/fs/fskit"
@@ -102,6 +104,56 @@ func TestTaskFDManifestsStdioDoesNotStat(t *testing.T) {
 	if !manifest.Restorable || !manifest.Stdio {
 		t.Fatalf("stdio manifest = %#v, want restorable stdio", manifest)
 	}
+}
+
+func TestTaskFDManifestsStdioDoesNotWaitForRead(t *testing.T) {
+	pr, pw := io.Pipe()
+	defer pr.Close()
+	defer pw.Close()
+
+	fd := newOpenFile(pipeReadFile{Reader: pr}, "#task/1/fd/0", 0, true, true)
+	readStarted := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		close(readStarted)
+		var b [1]byte
+		_, err := fd.Read(b[:])
+		done <- err
+	}()
+	<-readStarted
+
+	manifestDone := make(chan error, 1)
+	go func() {
+		manifest, err := fd.manifest(0)
+		if err == nil && (!manifest.Restorable || !manifest.Stdio) {
+			err = errors.New("stdio fd manifest is not restorable")
+		}
+		manifestDone <- err
+	}()
+
+	select {
+	case err := <-manifestDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stdio manifest waited for blocked read")
+	}
+
+	pw.Close()
+	<-done
+}
+
+type pipeReadFile struct {
+	io.Reader
+}
+
+func (f pipeReadFile) Close() error {
+	return nil
+}
+
+func (f pipeReadFile) Stat() (os.FileInfo, error) {
+	return nil, errors.New("stat should not be called")
 }
 
 type statFailFile struct {

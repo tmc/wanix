@@ -180,6 +180,17 @@ func (f *openFile) Sync() error {
 }
 
 func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
+	if f.stdio {
+		return migration.FDManifest{
+			FD:         fd,
+			Path:       f.path,
+			Flags:      f.flags,
+			Offset:     f.offset,
+			Stdio:      true,
+			Restorable: true,
+		}, nil
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -189,10 +200,6 @@ func (f *openFile) manifest(fd int) (migration.FDManifest, error) {
 		Flags:  f.flags,
 		Offset: f.offset,
 		Stdio:  f.stdio,
-	}
-	if f.stdio {
-		m.Restorable = true
-		return m, nil
 	}
 	if info, err := f.file.Stat(); err == nil {
 		m.Kind = fdKind(info.Mode())
