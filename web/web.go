@@ -17,6 +17,7 @@ import (
 	"tractor.dev/wanix/web/dl"
 	"tractor.dev/wanix/web/dom"
 	"tractor.dev/wanix/web/fsa"
+	"tractor.dev/wanix/web/llm"
 	"tractor.dev/wanix/web/worker"
 )
 
@@ -28,6 +29,7 @@ func New(root *wanix.Task) fskit.MapFS {
 		"caches":  caches.New(),
 		"worker":  workerfs,
 		"dl":      dl.New(),
+		"llm":     llm.New(),
 	}
 	opfs, err := fsa.OPFS()
 	if err != nil {
