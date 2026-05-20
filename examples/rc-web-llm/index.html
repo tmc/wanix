@@ -84,7 +84,7 @@
         <div class="grid">
             <div class="panel"><b>Availability</b><span id="availability">pending</span></div>
             <div class="panel"><b>API</b><span id="api">pending</span></div>
-            <div class="panel"><b>Download</b><span id="download">not started</span></div>
+            <div class="panel"><b>Download</b><button id="download-button" type="button">Run setup</button> <span id="download">not started</span></div>
         </div>
         <pre id="details"></pre>
     </header>
@@ -96,33 +96,24 @@
 
         <wanix-bind type="file" dst="rc.wasm" src="../repl-rc/rc.wasm" mode="0755"></wanix-bind>
         <wanix-bind type="file" dst="llm.rc" mode="0755">
-            echo 'LanguageModel availability:'
-            cat web/llm/availability
-            echo
-            echo 'LanguageModel status:'
-            cat web/llm/status
-            echo
-            echo 'Model download action:'
-            cat web/llm/download
-            echo
-            echo 'Prompt: Write one sentence about filesystems as APIs.'
-            echo 'Write one sentence about filesystems as APIs.' > prompt.txt
-            openfile web/llm/prompt < prompt.txt
-            echo
-            echo 'Try another prompt interactively with:'
+            echo 'LanguageModel status is shown above the shell.'
+            echo 'When availability is available, try:'
             echo '  echo ''your prompt'' > prompt.txt'
             echo '  openfile web/llm/prompt < prompt.txt'
         </wanix-bind>
 
         <wanix-task id="shell" cmd="rc.wasm llm.rc" type="gojs" term start></wanix-task>
-        <wanix-term path="#task/shell/term"></wanix-term>
+        <wanix-term id="shell-term"></wanix-term>
     </wanix-system>
     <script type="module">
         const system = document.querySelector("wanix-system");
+        const task = document.querySelector("wanix-task");
+        const term = document.querySelector("#shell-term");
         const decoder = new TextDecoder();
         const availability = document.querySelector("#availability");
         const api = document.querySelector("#api");
         const download = document.querySelector("#download");
+        const downloadButton = document.querySelector("#download-button");
         const details = document.querySelector("#details");
 
         async function readText(name) {
@@ -142,13 +133,23 @@
         }
 
         system.addEventListener("ready", async () => {
+            if (task.term) {
+                term.path = task.term;
+                await term.connect();
+            }
             await refreshStatus();
+        });
+
+        downloadButton.addEventListener("click", async () => {
+            downloadButton.disabled = true;
             try {
                 download.textContent = await readText("web/llm/download");
             } catch (err) {
                 download.textContent = String(err);
+            } finally {
+                downloadButton.disabled = false;
+                await refreshStatus();
             }
-            await refreshStatus();
         });
     </script>
 </body>
