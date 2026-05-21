@@ -523,8 +523,14 @@ func (s *session) status() map[string]any {
 	if s.browser.Truthy() {
 		status["live"] = true
 	}
+	if globalSystemPrompt() != "" {
+		status["global_system"] = true
+	}
 	if s.system != "" {
 		status["system"] = true
+	}
+	if combinedSystemPrompt(s.system) != "" {
+		status["effective_system"] = true
 	}
 	if s.prefill != "" {
 		status["prefill"] = true

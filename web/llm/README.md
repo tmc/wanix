@@ -64,7 +64,7 @@ echo download > llm/ctl
 Set an overall system prompt:
 
 ```sh
-echo 'Answer with short, concrete explanations.' > llm/system
+echo 'Answer in at most two short sentences.' > llm/system
 cat llm/system
 ```
 
@@ -105,6 +105,10 @@ Allocated sessions keep a live browser `LanguageModel` session across prompts
 until `ctl close`. They also record user and assistant turns in `history`; if a
 browser session must be recreated, the recorded turns are supplied as
 `initialPrompts`.
+
+System prompts are not stored in `<id>/history`; that file contains user and
+assistant turns only. Use `<id>/status` to see whether a global or session
+system prompt is active.
 
 For separate input and output files:
 
