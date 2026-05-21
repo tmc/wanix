@@ -98,7 +98,6 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	case ".":
 		return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
-			fskit.Entry("chat", fs.ModeDir|0755),
 			fskit.Entry("ctl", 0222),
 			fskit.Entry("new", 0444),
 			fskit.Entry("status", 0444),
@@ -814,14 +813,16 @@ type sessionPromptFile struct {
 	name    string
 	session *session
 	lineBuf []byte
+	pending []byte
+	off     int
 }
 
 func (f *sessionPromptFile) Stat() (fs.FileInfo, error) {
-	return fskit.Entry(f.name, 0222), nil
+	return fskit.Entry(f.name, 0777), nil
 }
 
-func (f *sessionPromptFile) Read([]byte) (int, error) {
-	return 0, &fs.PathError{Op: "read", Path: f.name, Err: fs.ErrInvalid}
+func (f *sessionPromptFile) Read(b []byte) (int, error) {
+	return readSessionOutput(f.session, &f.pending, &f.off, b)
 }
 
 func (f *sessionPromptFile) Write(p []byte) (int, error) {
@@ -861,17 +862,21 @@ func (f *sessionOutputFile) Stat() (fs.FileInfo, error) {
 }
 
 func (f *sessionOutputFile) Read(b []byte) (int, error) {
+	return readSessionOutput(f.session, &f.pending, &f.off, b)
+}
+
+func readSessionOutput(s *session, pending *[]byte, off *int, b []byte) (int, error) {
 	for {
-		if len(f.pending) > f.off {
-			n := copy(b, f.pending[f.off:])
-			f.off += n
-			if f.off >= len(f.pending) {
-				f.pending = nil
-				f.off = 0
+		if len(*pending) > *off {
+			n := copy(b, (*pending)[*off:])
+			*off += n
+			if *off >= len(*pending) {
+				*pending = nil
+				*off = 0
 			}
 			return n, nil
 		}
-		out, ok := <-f.session.output
+		out, ok := <-s.output
 		if !ok {
 			return 0, io.EOF
 		}
@@ -881,8 +886,8 @@ func (f *sessionOutputFile) Read(b []byte) (int, error) {
 		if out.err != nil {
 			return 0, out.err
 		}
-		f.pending = out.data
-		f.off = 0
+		*pending = out.data
+		*off = 0
 	}
 }
 

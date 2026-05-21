@@ -18,25 +18,24 @@ Top-level files:
   `downloading`, `unavailable`, or an availability error.
 - `status`: read-only JSON with API presence, availability, download state,
   user agent, Chrome brands when available, and the last availability error.
-- `system`: read/write global system prompt. It applies to one-shot prompts
-  and allocated sessions.
+- `system`: read/write global system prompt. It applies to allocated sessions.
 - `ctl`: write-only global control file.
   - `download`: ask Chrome to create a session with a download monitor.
   - `start`: synonym for `download`.
 - `new`: read-only session allocator. Each read creates a session and prints
   its id.
-- `chat/`: one-shot prompt interface.
-  - `input`: prompt input.
-  - `output`: open read/write, write a prompt, and read the response from the
-    same open file.
-  - `status`: same JSON as top-level `status`.
+
+Prompts run through allocated sessions. Open `<id>/prompt`, write a prompt,
+and read the response from the same file. `<id>/output` also exposes the most
+recent response as a separate read stream.
 
 Session files under `<id>/`:
 
 - `system`: read/write session system prompt. Changing it resets the live
   browser session for that Wanix session. It is combined with top-level
   `system`.
-- `prompt`: write-only prompt input.
+- `prompt`: prompt/response stream. Open it read/write, write a prompt, and
+  read the response from the same open file.
 - `output`: read-only response stream for the most recent prompt.
 - `prefill`: read/write assistant response prefix. The next prompt sends it as
   a trailing assistant message with `prefix: true`.
@@ -69,18 +68,6 @@ echo 'Answer with short, concrete explanations.' > llm/system
 cat llm/system
 ```
 
-Run a one-shot prompt:
-
-```sh
-echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
-openfile llm/chat/output < prompt.txt
-```
-
-One-shot prompts create a browser session for the request and close it after
-the response.
-
-## Sessions
-
 Use allocated sessions when you want system prompts, conversation continuation,
 history, cloning, structured output, or stop/close controls.
 
@@ -94,14 +81,14 @@ cat llm/new
 echo 'You are a terse Go systems programmer.' > llm/1/system
 echo 'You are a lyrical Plan 9 guide.' > llm/2/system
 
-echo 'Explain why Go code often favors small interfaces.' > llm/1/prompt
-cat llm/1/output
+echo 'Explain why Go code often favors small interfaces.' > prompt-go.txt
+openfile llm/1/prompt < prompt-go.txt
 
-echo 'Describe namespaces as if introducing Plan 9 to a shell user.' > llm/2/prompt
-cat llm/2/output
+echo 'Describe namespaces as if introducing Plan 9 to a shell user.' > prompt-plan9.txt
+openfile llm/2/prompt < prompt-plan9.txt
 
-echo 'Continue with one concrete example.' > llm/1/prompt
-cat llm/1/output
+echo 'Continue with one concrete example.' > prompt-followup.txt
+openfile llm/1/prompt < prompt-followup.txt
 
 echo continue > llm/2/ctl
 cat llm/2/output
@@ -119,13 +106,7 @@ until `ctl close`. They also record user and assistant turns in `history`; if a
 browser session must be recreated, the recorded turns are supplied as
 `initialPrompts`.
 
-`<id>/prompt` is write-only. Do not use:
-
-```sh
-openfile llm/1/prompt < prompt.txt
-```
-
-Use:
+For separate input and output files:
 
 ```sh
 cat prompt.txt > llm/1/prompt

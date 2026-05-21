@@ -29,6 +29,7 @@ func TestSourceExposesBindableChatFiles(t *testing.T) {
 		`func (s *session) start(prompt string) error`,
 		`func (s *session) browserSession() (js.Value, error)`,
 		`func runPromptWithSession(session js.Value, prompt string, out chan<- promptOutcome, opts streamOptions) error`,
+		`func readSessionOutput(s *session, pending *[]byte, off *int, b []byte) (int, error)`,
 		`func cloneSession(src *session) *session`,
 		`func combinedSystemPrompt(local string) string`,
 		`func initialPrompts(system string, history []promptMessage) js.Value`,

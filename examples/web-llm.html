@@ -201,25 +201,21 @@ Continue with one concrete example.
         <wanix-bind type="file" dst="README" mode="0644">
 Browser Prompt API is mounted at llm and web/llm.
 
-One-shot:
+Start:
 
   cat llm/status
   echo download > llm/ctl
   echo 'Answer with short, concrete explanations.' > llm/system
-  openfile llm/chat/output < prompt.txt
 
-Two live conversations after a fresh page load:
+Live conversations after a fresh page load:
 
   cat llm/new
   cat llm/new
   echo 'You are a terse Go systems programmer.' > llm/1/system
   echo 'You are a lyrical Plan 9 guide.' > llm/2/system
-  cat prompt-go.txt > llm/1/prompt
-  cat llm/1/output
-  cat prompt-plan9.txt > llm/2/prompt
-  cat llm/2/output
-  cat prompt-followup.txt > llm/1/prompt
-  cat llm/1/output
+  openfile llm/1/prompt < prompt-go.txt
+  openfile llm/2/prompt < prompt-plan9.txt
+  openfile llm/1/prompt < prompt-followup.txt
   echo continue > llm/2/ctl
   cat llm/2/output
   cat llm/1/history
@@ -257,21 +253,19 @@ Two live conversations after a fresh page load:
             <button id="check-download" type="button">Start download</button>
             <section class="commands" aria-label="Example rc commands">
                 <h2>Try in rc</h2>
-                <pre>cat llm/status
+                <pre># setup
+cat llm/status
 echo download &gt; llm/ctl
 echo 'Answer with short, concrete explanations.' &gt; llm/system
-openfile llm/chat/output &lt; prompt.txt
 
+# live sessions
 cat llm/new
 cat llm/new
 echo 'You are a terse Go systems programmer.' &gt; llm/1/system
 echo 'You are a lyrical Plan 9 guide.' &gt; llm/2/system
-cat prompt-go.txt &gt; llm/1/prompt
-cat llm/1/output
-cat prompt-plan9.txt &gt; llm/2/prompt
-cat llm/2/output
-cat prompt-followup.txt &gt; llm/1/prompt
-cat llm/1/output
+openfile llm/1/prompt &lt; prompt-go.txt
+openfile llm/2/prompt &lt; prompt-plan9.txt
+openfile llm/1/prompt &lt; prompt-followup.txt
 echo continue &gt; llm/2/ctl
 cat llm/2/output
 cat llm/1/history
