@@ -27,7 +27,8 @@ Top-level files:
   its id.
 - `prompt`: one-shot prompt file. Write a prompt and read the response from
   the same open file.
-- `chat/`: compatibility service directory.
+- `chat/`: alternate one-shot prompt interface for programs that prefer
+  separate input, output, and status files.
   - `input`: prompt input.
   - `output`: one-shot prompt/response stream, same behavior as `prompt`.
   - `status`: same JSON as top-level `status`.
