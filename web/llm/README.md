@@ -18,6 +18,8 @@ Top-level files:
   `downloading`, `unavailable`, or an availability error.
 - `status`: read-only JSON with API presence, availability, download state,
   user agent, Chrome brands when available, and the last availability error.
+- `system`: read/write global system prompt. It applies to one-shot prompts
+  and allocated sessions.
 - `ctl`: write-only global control file.
   - `download`: ask Chrome to create a session with a download monitor.
   - `start`: synonym for `download`.
@@ -32,8 +34,9 @@ Top-level files:
 
 Session files under `<id>/`:
 
-- `system`: read/write system prompt. Changing it resets the live browser
-  session for that Wanix session.
+- `system`: read/write session system prompt. Changing it resets the live
+  browser session for that Wanix session. It is combined with top-level
+  `system`.
 - `prompt`: write-only prompt input.
 - `output`: read-only response stream for the most recent prompt.
 - `prefill`: read/write assistant response prefix. The next prompt sends it as
@@ -58,6 +61,13 @@ Check availability and start model setup:
 cat llm/availability
 cat llm/status
 echo download > llm/ctl
+```
+
+Set an overall system prompt:
+
+```sh
+echo 'Answer with short, concrete explanations.' > llm/system
+cat llm/system
 ```
 
 Run a one-shot prompt:

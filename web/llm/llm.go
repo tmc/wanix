@@ -45,6 +45,9 @@ func (fsys *FS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, erro
 	if name == "ctl" && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return newCtlFile(name), nil
 	}
+	if name == "system" && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+		return newGlobalSystemFile(name), nil
+	}
 	if strings.HasSuffix(name, "/ctl") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return openSessionPath(name)
 	}
@@ -80,6 +83,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			fskit.Entry("new", 0444),
 			fskit.Entry("prompt", 0777),
 			fskit.Entry("status", 0444),
+			fskit.Entry("system", 0666),
 		), nil
 	case "availability":
 		return &fskit.FuncFile{
@@ -114,6 +118,8 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		return statusFile(name), nil
 	case "status":
 		return statusFile(name), nil
+	case "system":
+		return newGlobalSystemFile(name), nil
 	default:
 		return openSessionPath(name)
 	}
@@ -138,12 +144,58 @@ func statusFile(name string) fs.File {
 	}
 }
 
+type globalSystemFile struct {
+	name string
+	buf  []byte
+	data []byte
+	off  int
+}
+
+func newGlobalSystemFile(name string) *globalSystemFile {
+	return &globalSystemFile{name: name}
+}
+
+func (f *globalSystemFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(path.Base(f.name), 0666), nil
+}
+
+func (f *globalSystemFile) Read(b []byte) (int, error) {
+	if f.data == nil {
+		f.data = []byte(globalSystemPrompt())
+	}
+	if f.off >= len(f.data) {
+		return 0, io.EOF
+	}
+	n := copy(b, f.data[f.off:])
+	f.off += n
+	return n, nil
+}
+
+func (f *globalSystemFile) Write(p []byte) (int, error) {
+	f.buf = append(f.buf, p...)
+	return len(p), nil
+}
+
+func (f *globalSystemFile) Close() error {
+	if f.buf != nil {
+		setGlobalSystemPrompt(string(f.buf))
+	}
+	return nil
+}
+
+func (f *globalSystemFile) Truncate(int64) error {
+	f.buf = nil
+	setGlobalSystemPrompt("")
+	return nil
+}
+
 type Status struct {
 	API          string         `json:"api"`
 	Availability string         `json:"availability"`
 	Download     DownloadStatus `json:"download"`
 	Error        string         `json:"error,omitempty"`
 	FS           string         `json:"fs"`
+	System       bool           `json:"system,omitempty"`
 	UserAgent    string         `json:"user_agent"`
 	Chrome       string         `json:"chrome,omitempty"`
 }
@@ -163,6 +215,33 @@ var downloadState = struct {
 	inFlight bool
 }{
 	status: DownloadStatus{State: "idle"},
+}
+
+var globalSystem = struct {
+	mu   sync.Mutex
+	text string
+}{}
+
+func globalSystemPrompt() string {
+	globalSystem.mu.Lock()
+	defer globalSystem.mu.Unlock()
+	return globalSystem.text
+}
+
+func setGlobalSystemPrompt(text string) {
+	globalSystem.mu.Lock()
+	globalSystem.text = text
+	globalSystem.mu.Unlock()
+
+	sessions.mu.Lock()
+	var live []*session
+	for _, s := range sessions.byID {
+		live = append(live, s)
+	}
+	sessions.mu.Unlock()
+	for _, s := range live {
+		s.resetBrowser()
+	}
 }
 
 func setDownloadStatus(status DownloadStatus) {
@@ -1041,6 +1120,7 @@ func promptStatus() (Status, error) {
 		return status, nil
 	}
 	status.Availability = availability
+	status.System = globalSystemPrompt() != ""
 	if availability == "downloading" && status.Download.State == "idle" {
 		status.Download = DownloadStatus{State: "downloading"}
 	}
@@ -1135,20 +1215,9 @@ func streamPrompt(prompt string, out chan<- promptOutcome) {
 }
 
 func runPrompt(prompt string) (string, error) {
-	api, err := promptAPI()
+	session, err := createPromptSession("", nil)
 	if err != nil {
 		return "", err
-	}
-	availability, err := promptAvailability()
-	if err != nil {
-		return "", err
-	}
-	if availability != "available" {
-		return "", fmt.Errorf("llm unavailable: %s", availability)
-	}
-	session, err := awaitErr(api.Call("create", languageModelOptions()), 30*time.Second)
-	if err != nil {
-		return "", fmt.Errorf("llm create: %w", err)
 	}
 	defer destroySession(session)
 
@@ -1230,6 +1299,7 @@ func createPromptSession(system string, history []promptMessage) (js.Value, erro
 		return js.Undefined(), fmt.Errorf("llm unavailable: %s", availability)
 	}
 	createOpts := languageModelOptions()
+	system = combinedSystemPrompt(system)
 	if system != "" || len(history) != 0 {
 		createOpts.Set("initialPrompts", initialPrompts(system, history))
 	}
@@ -1238,6 +1308,18 @@ func createPromptSession(system string, history []promptMessage) (js.Value, erro
 		return js.Undefined(), fmt.Errorf("llm create: %w", err)
 	}
 	return session, nil
+}
+
+func combinedSystemPrompt(local string) string {
+	global := globalSystemPrompt()
+	switch {
+	case global == "":
+		return local
+	case local == "":
+		return global
+	default:
+		return global + "\n\n" + local
+	}
 }
 
 func runPromptWithSession(session js.Value, prompt string, out chan<- promptOutcome, opts streamOptions) error {
