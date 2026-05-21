@@ -4,7 +4,6 @@ build: wasm bundle
 .PHONY: build
 
 wasm: bundle/v86-vm.wasm
-	GOWORK=off GOOS=js GOARCH=wasm go build -o ./bundle/v86-vm.wasm .
 .PHONY: wasm
 
 bundle: bundle/v86-vm.wasm bundle/v86.wasm
@@ -14,6 +13,8 @@ bundle: bundle/v86-vm.wasm bundle/v86.wasm
 v86.tgz: bundle	
 
 bundle/v86-vm.wasm: lib.js
+	mkdir -p ./bundle
+	GOWORK=off GOOS=js GOARCH=wasm go build -o ./bundle/v86-vm.wasm .
 
 bundle/v86.wasm:
 	mkdir -p ./bundle
@@ -33,4 +34,3 @@ clean:
 	rm -f lib.js
 	rm -f v86.tgz
 .PHONY: clean
-
