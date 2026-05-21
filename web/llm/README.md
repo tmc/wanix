@@ -25,13 +25,10 @@ Top-level files:
   - `start`: synonym for `download`.
 - `new`: read-only session allocator. Each read creates a session and prints
   its id.
-- `prompt`: one-shot prompt file. Open it read/write, write a prompt, and
-  read the response from the same open file. Plain write-only shell
-  redirections return without running a prompt.
-- `chat/`: alternate one-shot prompt interface for programs that prefer
-  separate input, output, and status files.
+- `chat/`: one-shot prompt interface.
   - `input`: prompt input.
-  - `output`: one-shot prompt/response stream, same behavior as `prompt`.
+  - `output`: open read/write, write a prompt, and read the response from the
+    same open file.
   - `status`: same JSON as top-level `status`.
 
 Session files under `<id>/`:
@@ -76,7 +73,7 @@ Run a one-shot prompt:
 
 ```sh
 echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
-openfile llm/prompt < prompt.txt
+openfile llm/chat/output < prompt.txt
 ```
 
 One-shot prompts create a browser session for the request and close it after

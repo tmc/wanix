@@ -206,7 +206,7 @@ One-shot:
   cat llm/status
   echo download > llm/ctl
   echo 'Answer with short, concrete explanations.' > llm/system
-  openfile llm/prompt < prompt.txt
+  openfile llm/chat/output < prompt.txt
 
 Two live conversations after a fresh page load:
 
@@ -260,7 +260,7 @@ Two live conversations after a fresh page load:
                 <pre>cat llm/status
 echo download &gt; llm/ctl
 echo 'Answer with short, concrete explanations.' &gt; llm/system
-openfile llm/prompt &lt; prompt.txt
+openfile llm/chat/output &lt; prompt.txt
 
 cat llm/new
 cat llm/new

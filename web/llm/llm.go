@@ -101,7 +101,6 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			fskit.Entry("chat", fs.ModeDir|0755),
 			fskit.Entry("ctl", 0222),
 			fskit.Entry("new", 0444),
-			fskit.Entry("prompt", 0777),
 			fskit.Entry("status", 0444),
 			fskit.Entry("system", 0666),
 		), nil
@@ -122,8 +121,6 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		return newCtlFile(name), nil
 	case "new":
 		return newSessionFile(name), nil
-	case "prompt":
-		return newPromptFile(name), nil
 	case "chat":
 		return fskit.DirFile(fskit.Entry("chat", fs.ModeDir|0755),
 			fskit.Entry("input", 0222),
