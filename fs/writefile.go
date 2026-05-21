@@ -15,6 +15,11 @@ func WriteFile(fsys FS, filename string, data []byte, perm FileMode) error {
 		return w.WriteFile(filename, data, perm)
 	}
 
+	ctx := WithOrigin(ContextFor(fsys), fsys, filename, "writefile")
+	if w, name, err := ResolveTo[WriteFileFS](fsys, ctx, filename); err == nil {
+		return w.WriteFile(name, data, perm)
+	}
+
 	f, err := Create(fsys, filename)
 	if errors.Is(err, ErrNotSupported) {
 		var e error

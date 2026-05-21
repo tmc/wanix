@@ -33,20 +33,40 @@ func New() *FS {
 
 var _ fs.FS = (*FS)(nil)
 var _ fs.OpenFileFS = (*FS)(nil)
+var _ fs.WriteFileFS = (*FS)(nil)
 
 // Open opens the named file.
 func (fsys *FS) Open(name string) (fs.File, error) {
 	return fsys.OpenContext(context.Background(), name)
 }
 
+func (fsys *FS) WriteFile(name string, data []byte, perm fs.FileMode) error {
+	if name == "prompt" || name == "chat/input" {
+		return nil
+	}
+	f, err := fsys.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = fs.Write(f, data)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 // OpenFile opens name with flags. Control files ignore create and truncate flags
 // so shell redirections such as "echo download > llm/ctl" work as commands.
 func (fsys *FS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, error) {
+	writeOnly := flag&os.O_WRONLY != 0 && flag&os.O_RDWR == 0
 	if name == "ctl" && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return newCtlFile(name), nil
 	}
 	if name == "system" && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return newGlobalSystemFile(name), nil
+	}
+	if (name == "prompt" || name == "chat/input") && writeOnly {
+		return newPromptInputFile(name), nil
 	}
 	if strings.HasSuffix(name, "/ctl") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return openSessionPath(name)
@@ -953,6 +973,38 @@ type promptOutcome struct {
 	data []byte
 	err  error
 	eof  bool
+}
+
+type promptInputFile struct {
+	name string
+}
+
+func newPromptInputFile(name string) *promptInputFile {
+	return &promptInputFile{name: name}
+}
+
+func (f *promptInputFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(path.Base(f.name), 0222), nil
+}
+
+func (f *promptInputFile) Write(b []byte) (int, error) {
+	return len(b), nil
+}
+
+func (f *promptInputFile) Read([]byte) (int, error) {
+	return 0, &fs.PathError{Op: "read", Path: f.name, Err: fs.ErrInvalid}
+}
+
+func (f *promptInputFile) Close() error {
+	return nil
+}
+
+func (f *promptInputFile) Seek(int64, int) (int64, error) {
+	return 0, &fs.PathError{Op: "seek", Path: f.name, Err: fs.ErrInvalid}
+}
+
+func (f *promptInputFile) Truncate(int64) error {
+	return nil
 }
 
 type promptFile struct {

@@ -25,8 +25,9 @@ Top-level files:
   - `start`: synonym for `download`.
 - `new`: read-only session allocator. Each read creates a session and prints
   its id.
-- `prompt`: one-shot prompt file. Write a prompt and read the response from
-  the same open file.
+- `prompt`: one-shot prompt file. Open it read/write, write a prompt, and
+  read the response from the same open file. Plain write-only shell
+  redirections return without running a prompt.
 - `chat/`: alternate one-shot prompt interface for programs that prefer
   separate input, output, and status files.
   - `input`: prompt input.
