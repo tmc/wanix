@@ -54,6 +54,96 @@ export class SystemElement extends WanixElement {
         return new WanixHandle(this._openPort(tid));
     }
 
+    async ready() {
+        if (this.isReady) {
+            return;
+        }
+        return this._ready;
+    }
+
+    async startTask(options={}) {
+        await this.ready();
+        const kind = options.kind || options.type || "auto";
+        const id = (await this.root.readText(["#task", "new", kind].join("/"))).trim();
+        const path = ["#task", id].join("/");
+        const task = this.openHandle(id);
+        if (options.cmd) {
+            await this.root.writeFile([path, "cmd"].join("/"), options.cmd);
+        }
+        if (options.alias) {
+            await this.root.writeFile([path, "alias"].join("/"), options.alias);
+        }
+        if (options.dir || options.wd) {
+            await this.root.writeFile([path, "dir"].join("/"), options.dir || options.wd);
+        }
+        if (options.env) {
+            await this.root.writeFile([path, "env"].join("/"), taskEnv(options.env));
+        }
+        await task.bind(path, "#task/self");
+        if (options.term) {
+            await this.bindTaskTerminal({id, path, task, alias: options.alias});
+        }
+        if (options.start !== false) {
+            await this.root.writeFile([path, "ctl"].join("/"), "start");
+        }
+        return {id, path, task, termPath: options.term ? ["#task", options.alias || id, "term"].join("/") : ""};
+    }
+
+    async bindTaskTerminal(task) {
+        const termID = (await this.root.readText("#term/new")).trim();
+        const termPath = ["#term", termID].join("/");
+        await this.root.bind(termPath, [task.path, "term"].join("/"));
+        if (task.alias) {
+            await this.root.bind(termPath, ["#task", task.alias, "term"].join("/"));
+        }
+        await task.task.bind(termPath, "#task/self/term");
+        for (const fd of [0, 1, 2]) {
+            await task.task.bind([termPath, "program"].join("/"), [task.path, "fd", String(fd)].join("/"));
+        }
+        task.termID = termID;
+        task.term = termPath;
+        return termPath;
+    }
+
+    async attachTerminal(host, path, options={}) {
+        if (typeof host === "string") {
+            host = document.getElementById(host);
+        }
+        const term = document.createElement("wanix-term");
+        term.setAttribute("for", this.id);
+        term.setAttribute("path", path);
+        for (const [key, value] of Object.entries(options)) {
+            if (value === false || value === undefined || value === null) {
+                continue;
+            }
+            const attr = key.replace(/[A-Z]/g, ch => "-" + ch.toLowerCase());
+            value === true ? term.setAttribute(attr, "") : term.setAttribute(attr, String(value));
+        }
+        host.replaceChildren(term);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        term._system = this;
+        await term.connect();
+        return term;
+    }
+
+    async startTerminalTask(options={}) {
+        const task = await this.startTask({...options, term: true});
+        if (options.host) {
+            await this.attachTerminal(options.host, task.termPath, options.terminal || {});
+        }
+        return task;
+    }
+
+    async writeTerminal(path, text) {
+        const stream = await this.root.openWritable([path, "data"].join("/"));
+        const writer = stream.getWriter();
+        try {
+            await writer.write(new TextEncoder().encode(text));
+        } finally {
+            await writer.close();
+        }
+    }
+
     get stdin() {
         this.root.openWritable("#wanix/stdin/data");
     }
@@ -148,4 +238,14 @@ export class SystemElement extends WanixElement {
 
 if (typeof window !== "undefined") {
     customElements.define("wanix-system", SystemElement);
+}
+
+function taskEnv(env) {
+    if (Array.isArray(env)) {
+        return env.join("\n");
+    }
+    if (env && typeof env === "object") {
+        return Object.entries(env).map(([key, value]) => `${key}=${value}`).join("\n");
+    }
+    return String(env || "");
 }

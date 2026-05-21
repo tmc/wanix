@@ -8544,10 +8544,55 @@ var WanixHandle2 = class {
     ];
     return { manifest, archives, states };
   }
-  async importBundle(bundle) {
+  async exportPathBundle(path, options = {}) {
+    const target3 = options.target || path;
+    const id = options.id || "rootfs";
+    const filesystems = [{
+      id,
+      source: options.source || ".",
+      archive: path,
+      archive_target: target3,
+      filesystem_source: options.filesystemSource || "."
+    }];
+    if (options.state === false) {
+      const manifest = normalizeBundleManifest({
+        version: "wanix-migration-v1",
+        mode: "migrate",
+        filesystems: filesystems.map(normalizeBundleFilesystem).map(({ archive, archive_target, filesystem_source, ...desc }) => ({
+          ...desc,
+          source: filesystem_source || target3
+        })),
+        tasks: [],
+        vms: []
+      });
+      return {
+        manifest,
+        archives: [{
+          id,
+          source: path,
+          target: target3,
+          filesystem_source: options.filesystemSource || ".",
+          data: await this.archive(path)
+        }],
+        states: []
+      };
+    }
+    return this.exportBundle(options.system === false ? filesystems.map(normalizeBundleFilesystem) : bundleFilesystems(filesystems));
+  }
+  async importPathBundleFrom(source, path, options = {}) {
+    const bundle = await source.exportPathBundle(path, options.export || {});
+    const restore = await this.importBundle(bundle, {
+      replace: options.replace !== false
+    });
+    return { bundle, restore };
+  }
+  async importBundle(bundle, options = {}) {
     this.logger(`importBundle`);
     if (!bundle || typeof bundle !== "object" || !bundle.manifest) {
       throw new Error("importBundle: invalid bundle");
+    }
+    if (options.replace) {
+      await this.replaceBundleTargets(bundle);
     }
     const manifest = normalizeBundleManifest(bundle.manifest);
     manifest.filesystems = (manifest.filesystems || []).map((desc) => ({ ...desc }));
@@ -8596,6 +8641,28 @@ var WanixHandle2 = class {
           await this.remove(target3);
         } catch {
         }
+      }
+    }
+  }
+  async replaceBundleTargets(bundle) {
+    this.logger(`replaceBundleTargets`);
+    for (const archive of bundle.archives || []) {
+      const desc = (bundle.manifest.filesystems || []).find((desc2) => desc2.id === archive.id);
+      const target3 = bundleArchiveTarget(desc, archive) || archive.source || desc && desc.source;
+      if (target3) {
+        try {
+          await this.removeAll(target3);
+        } catch {
+        }
+      }
+    }
+    for (const task of bundle.manifest.tasks || []) {
+      if (!task || !task.id) {
+        continue;
+      }
+      try {
+        await this.removeAll(["#task", task.id].join("/"));
+      } catch {
       }
     }
   }
@@ -8728,8 +8795,71 @@ function bundleFilesystems(archives = []) {
     ...systemBundleFilesystems.map((desc) => ({ ...desc }))
   ];
 }
+function encodeBundle(bundle) {
+  return {
+    version: 1,
+    manifest: bundle.manifest,
+    archives: (bundle.archives || []).map((archive) => ({
+      ...archive,
+      data: bytesToBase64(archive.data),
+      encoding: "base64"
+    })),
+    states: (bundle.states || []).map((state) => ({
+      ...state,
+      data: bytesToBase64(state.data),
+      encoding: "base64"
+    }))
+  };
+}
+function decodeBundle(encoded) {
+  if (!encoded || encoded.version !== 1) {
+    throw new Error("unsupported bundle file");
+  }
+  return {
+    manifest: encoded.manifest,
+    archives: (encoded.archives || []).map(({ encoding, data, ...archive }) => ({
+      ...archive,
+      data: encoding === "base64" ? base64ToBytes(data) : data
+    })),
+    states: (encoded.states || []).map(({ encoding, data, ...state }) => ({
+      ...state,
+      data: encoding === "base64" ? base64ToBytes(data) : data
+    }))
+  };
+}
+function downloadBundle(bundle, options = {}) {
+  const name = options.name || `wanix-bundle-${(/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-")}.json`;
+  const blob = new Blob([JSON.stringify(encodeBundle(bundle), null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
 if (typeof window !== "undefined") {
   window["WanixBundleFilesystems"] = bundleFilesystems;
+  window["WanixEncodeBundle"] = encodeBundle;
+  window["WanixDecodeBundle"] = decodeBundle;
+  window["WanixDownloadBundle"] = downloadBundle;
+}
+function bytesToBase64(data) {
+  const bytes = bundleArchiveData(data);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  }
+  return btoa(binary);
+}
+function base64ToBytes(text) {
+  const binary = atob(text || "");
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
 }
 function bundleArchiveSource(desc, request) {
   if (!request) {

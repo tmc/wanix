@@ -729,7 +729,7 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 		},
 		{
 			name: "import bundle",
-			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?filesystemSource\s*=.*?archive\.filesystem_source.*?desc\.source\s*=\s*filesystemSource.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?kind\s*===\s*"task".*?task\.state_path\s*=\s*target.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
+			re:   `(?s)async\s+importBundle\s*\(\s*bundle\s*,\s*options\s*=\s*\{\}\s*\).*?options\.replace.*?this\.replaceBundleTargets\(\s*bundle\s*\).*?normalizeBundleManifest\(\s*bundle\.manifest\s*\).*?bundleArchiveTarget\(\s*desc\s*,\s*archive\s*\).*?filesystemSource\s*=.*?archive\.filesystem_source.*?desc\.source\s*=\s*filesystemSource.*?this\.importArchive\(\s*target\s*,\s*bundleArchiveData\(\s*archive\.data\s*\)\s*\).*?bundle\.states.*?kind\s*===\s*"task".*?task\.state_path\s*=\s*target.*?this\.writeFile\(\s*target\s*,\s*bundleStateData\(\s*state\.data\s*\)\s*\).*?this\.restoreBundleManifest\(\s*manifest\s*\).*?this\.remove\(\s*target\s*\)`,
 		},
 		{
 			name: "archive data",
@@ -743,6 +743,18 @@ func TestHandleJSBundleHarnessWrappers(t *testing.T) {
 			name: "filesystem helper",
 			re:   `(?s)export\s+function\s+bundleFilesystems\s*\(\s*archives\s*=\s*\[\]\s*\).*?normalizeBundleFilesystem.*?systemBundleFilesystems.*?WanixBundleFilesystems`,
 		},
+		{
+			name: "path bundle helper",
+			re:   `(?s)async\s+exportPathBundle\s*\(\s*path\s*,\s*options\s*=\s*\{\}\s*\).*?archive:\s*path.*?archive_target:\s*target.*?options\.system\s*===\s*false.*?normalizeBundleFilesystem.*?bundleFilesystems`,
+		},
+		{
+			name: "path bundle transfer helper",
+			re:   `(?s)async\s+importPathBundleFrom\s*\(\s*source\s*,\s*path\s*,\s*options\s*=\s*\{\}\s*\).*?source\.exportPathBundle\(\s*path\s*,\s*options\.export\s*\|\|\s*\{\}\s*\).*?this\.importBundle\(\s*bundle\s*,\s*\{.*?replace:\s*options\.replace\s*!==\s*false`,
+		},
+		{
+			name: "bundle file helpers",
+			re:   `(?s)export\s+function\s+encodeBundle\s*\(\s*bundle\s*\).*?bytesToBase64.*?export\s+function\s+decodeBundle\s*\(\s*encoded\s*\).*?base64ToBytes.*?export\s+function\s+downloadBundle\s*\(\s*bundle\s*,\s*options\s*=\s*\{\}\s*\)`,
+		},
 	} {
 		if !regexp.MustCompile(tt.re).MatchString(src) {
 			t.Fatalf("handle.js missing %s wrapper", tt.name)
@@ -755,7 +767,7 @@ func TestHandleJSBundleHarnessSmoke(t *testing.T) {
 		t.Skip("node not found")
 	}
 	script := `
-import {WanixHandle, bundleFilesystems} from "./api/handle.js";
+import {WanixHandle, bundleFilesystems, encodeBundle, decodeBundle} from "./api/handle.js";
 
 const h = Object.create(WanixHandle.prototype);
 const calls = [];
@@ -790,6 +802,9 @@ h.writeFile = async (name, data) => {
 };
 h.remove = async name => {
 	calls.push(["remove", name]);
+};
+h.removeAll = async name => {
+	calls.push(["removeAll", name]);
 };
 h.restoreBundleManifest = async manifest => {
 	calls.push([
@@ -831,6 +846,21 @@ await h.importBundle({
 	},
 	archives: [{id: "exportfs", source: "#task/2/export", target: "exports/2", data: new Uint8Array([7])}],
 });
+const encoded = encodeBundle(bundle);
+const decoded = decodeBundle(encoded);
+if (encoded.version !== 1 || encoded.archives[0].encoding !== "base64" || decoded.archives[0].data[0] !== 1) {
+	throw new Error("encoded bundle = " + JSON.stringify(encoded));
+}
+await h.importBundle({
+	manifest: {
+		version: "wanix-migration-v1",
+		mode: "migrate",
+		filesystems: [{id: "rootfs", kind: "memfs", source: "mnt"}],
+		tasks: [{id: "2", kind: "js"}],
+	},
+	archives: [{id: "rootfs", source: "mnt", data: new Uint8Array([9])}],
+	states: [],
+}, {replace: true});
 
 const failClosed = Object.create(WanixHandle.prototype);
 failClosed.logger = () => {};
@@ -869,6 +899,10 @@ const want = JSON.stringify([
 	["remove", ".wanix-vmstate-1.bin"],
 	["importArchive", "exports/2", [7]],
 	["restoreBundleManifest", "wanix-migration-v1", [["exportfs", "exports/2"]], [], [["2", ""]]],
+	["removeAll", "mnt"],
+	["removeAll", "#task/2"],
+	["importArchive", "mnt", [9]],
+	["restoreBundleManifest", "wanix-migration-v1", [["rootfs", "mnt"]], [], [["2", ""]]],
 ]);
 if (got !== want) {
 	throw new Error("calls = " + got + ", want " + want);
@@ -911,6 +945,58 @@ if (JSON.stringify(cow.slice(0, 3)) !== JSON.stringify([
 	{id: "cowfs", kind: "cowfs", base_fs_id: "basefs", overlay_fs_id: "overlayfs", whiteout_dir: ".wh"},
 ])) {
 	throw new Error("cow helper = " + JSON.stringify(cow));
+}
+
+const easy = Object.create(WanixHandle.prototype);
+easy.logger = () => {};
+easy.bundleManifest = async filesystems => {
+	const got = filesystems[0];
+	const want = {kind: "memfs", archive: "demo", id: "rootfs", source: ".", archive_target: "demo", filesystem_source: "."};
+	if (JSON.stringify(got) !== JSON.stringify(want)) {
+		throw new Error("exportPathBundle filesystems = " + JSON.stringify(filesystems));
+	}
+	return {version: "wanix-migration-v1", mode: "migrate", filesystems: filesystems.map(({archive, ...desc}) => desc), tasks: []};
+};
+easy.bundleVMStates = async () => [];
+easy.bundleTaskStates = async () => [];
+easy.archive = async name => {
+	if (name !== "demo") {
+		throw new Error("exportPathBundle archive = " + name);
+	}
+	return new Uint8Array([8]);
+};
+const easyBundle = await easy.exportPathBundle("demo");
+if (easyBundle.archives.length !== 1 || easyBundle.archives[0].source !== "demo" || easyBundle.archives[0].filesystem_source !== ".") {
+	throw new Error("exportPathBundle bundle = " + JSON.stringify(easyBundle));
+}
+const fileOnlyBundle = await easy.exportPathBundle("demo", {system: false});
+if (fileOnlyBundle.manifest.filesystems.length !== 1 || fileOnlyBundle.manifest.filesystems[0].id !== "rootfs") {
+	throw new Error("exportPathBundle file-only bundle = " + JSON.stringify(fileOnlyBundle.manifest.filesystems));
+}
+const statelessBundle = await easy.exportPathBundle("demo", {state: false});
+if (statelessBundle.states.length !== 0 || statelessBundle.manifest.tasks.length !== 0 || statelessBundle.archives[0].data[0] !== 8) {
+	throw new Error("exportPathBundle stateless bundle = " + JSON.stringify(statelessBundle));
+}
+
+const target = Object.create(WanixHandle.prototype);
+target.logger = () => {};
+target.removeAll = async name => {
+	if (name !== "demo") {
+		throw new Error("importPathBundleFrom removeAll = " + name);
+	}
+};
+target.importArchive = async (name, data) => {
+	if (name !== "demo" || data[0] !== 8) {
+		throw new Error("importPathBundleFrom archive = " + name + " " + Array.from(data));
+	}
+	return {entries: 1};
+};
+target.writeFile = async () => {};
+target.remove = async () => {};
+target.restoreBundleManifest = async manifest => ({tasks: manifest.tasks.map(task => task.id)});
+const transfer = await target.importPathBundleFrom(easy, "demo");
+if (transfer.bundle.archives.length !== 1 || JSON.stringify(transfer.restore.tasks) !== "[]") {
+	throw new Error("importPathBundleFrom transfer = " + JSON.stringify(transfer));
 }
 `
 	cmd := exec.Command("node", "--input-type=module", "-e", script)
