@@ -48,6 +48,9 @@ func (fsys *FS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, erro
 	if strings.HasSuffix(name, "/ctl") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return openSessionPath(name)
 	}
+	if strings.HasSuffix(name, "/history") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+		return openSessionPath(name)
+	}
 	if strings.HasSuffix(name, "/prompt") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return openSessionPath(name)
 	}
@@ -204,6 +207,7 @@ func newSession() *session {
 	s := &session{
 		id:         id,
 		created:    time.Now(),
+		browser:    js.Undefined(),
 		controller: js.Undefined(),
 		output:     make(chan promptOutcome, 64),
 		state:      "idle",
@@ -220,8 +224,18 @@ func cloneSession(src *session) *session {
 	history := append([]promptMessage(nil), src.history...)
 	lastUser := src.lastUser
 	lastAnswer := src.lastAnswer
+	browser := src.browser
 	src.mu.Unlock()
 	s := newSession()
+	if browser.Truthy() {
+		clone := browser.Get("clone")
+		if !clone.IsUndefined() && !clone.IsNull() {
+			if cloned, err := awaitErr(browser.Call("clone"), 30*time.Second); err == nil {
+				s.browser = cloned
+				updateSessionContext(s, cloned)
+			}
+		}
+	}
 	s.mu.Lock()
 	s.system = system
 	s.prefill = prefill
@@ -248,6 +262,7 @@ func removeSession(id string) {
 
 type session struct {
 	mu          sync.Mutex
+	runMu       sync.Mutex
 	id          string
 	created     time.Time
 	state       string
@@ -260,6 +275,7 @@ type session struct {
 	history     []promptMessage
 	contextWin  int
 	contextUse  int
+	browser     js.Value
 	controller  js.Value
 	controllerF func()
 	output      chan promptOutcome
@@ -301,18 +317,23 @@ func (s *session) start(prompt string) error {
 }
 
 func (s *session) run(prompt string) error {
+	s.runMu.Lock()
+	defer s.runMu.Unlock()
+
 	s.mu.Lock()
-	system := s.system
 	prefill := s.prefill
 	schema := s.schema
-	history := append([]promptMessage(nil), s.history...)
 	s.mu.Unlock()
+
+	browser, err := s.browserSession()
+	if err != nil {
+		return err
+	}
+
 	var answer strings.Builder
-	err := runPromptStream(prompt, s.output, streamOptions{
-		system:  system,
+	err = runPromptWithSession(browser, prompt, s.output, streamOptions{
 		prefill: prefill,
 		schema:  schema,
-		history: history,
 		answer:  &answer,
 		session: s,
 	})
@@ -322,8 +343,8 @@ func (s *session) run(prompt string) error {
 	s.mu.Lock()
 	s.lastAnswer = answer.String()
 	s.history = append(s.history,
-		promptMessage{role: "user", content: prompt},
-		promptMessage{role: "assistant", content: s.lastAnswer},
+		promptMessage{Role: "user", Content: prompt},
+		promptMessage{Role: "assistant", Content: s.lastAnswer},
 	)
 	s.mu.Unlock()
 	return nil
@@ -338,6 +359,41 @@ func (s *session) stop() {
 	}
 }
 
+func (s *session) resetBrowser() {
+	s.mu.Lock()
+	browser := s.browser
+	s.browser = js.Undefined()
+	s.contextWin = 0
+	s.contextUse = 0
+	s.mu.Unlock()
+	if browser.Truthy() {
+		destroySession(browser)
+	}
+}
+
+func (s *session) replaceHistory(history []promptMessage) {
+	s.mu.Lock()
+	s.history = append([]promptMessage(nil), history...)
+	s.lastUser = ""
+	s.lastAnswer = ""
+	if n := len(s.history); n >= 2 {
+		if s.history[n-2].Role == "user" {
+			s.lastUser = s.history[n-2].Content
+		}
+		if s.history[n-1].Role == "assistant" {
+			s.lastAnswer = s.history[n-1].Content
+		}
+	}
+	browser := s.browser
+	s.browser = js.Undefined()
+	s.contextWin = 0
+	s.contextUse = 0
+	s.mu.Unlock()
+	if browser.Truthy() {
+		destroySession(browser)
+	}
+}
+
 func (s *session) close() {
 	s.mu.Lock()
 	if s.closed {
@@ -347,9 +403,13 @@ func (s *session) close() {
 	s.closed = true
 	s.state = "closed"
 	controller := s.controller
+	browser := s.browser
 	s.mu.Unlock()
 	if controller.Truthy() {
 		controller.Call("abort")
+	}
+	if browser.Truthy() {
+		destroySession(browser)
 	}
 	s.wg.Wait()
 	close(s.output)
@@ -364,6 +424,9 @@ func (s *session) status() map[string]any {
 		"state":           s.state,
 		"created":         s.created.Format(time.RFC3339),
 		"elapsed_seconds": time.Since(s.created).Seconds(),
+	}
+	if s.browser.Truthy() {
+		status["live"] = true
 	}
 	if s.system != "" {
 		status["system"] = true
@@ -408,6 +471,8 @@ func openSessionPath(name string) (fs.File, error) {
 		return sessionCloneFile(s), nil
 	case "ctl":
 		return &sessionCtlFile{name: path.Base(elem), session: s}, nil
+	case "history":
+		return &sessionHistoryFile{name: path.Base(elem), session: s}, nil
 	case "prompt":
 		return &sessionPromptFile{name: path.Base(elem), session: s}, nil
 	case "output":
@@ -429,6 +494,7 @@ func sessionDir(*session) fs.File {
 	return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 		fskit.Entry("clone", 0444),
 		fskit.Entry("ctl", 0222),
+		fskit.Entry("history", 0666),
 		fskit.Entry("output", 0444),
 		fskit.Entry("prefill", 0666),
 		fskit.Entry("prompt", 0222),
@@ -507,6 +573,62 @@ func (f *sessionCtlFile) Close() error {
 	return nil
 }
 
+type sessionHistoryFile struct {
+	name    string
+	session *session
+	buf     []byte
+	data    []byte
+	off     int
+}
+
+func (f *sessionHistoryFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(f.name, 0666), nil
+}
+
+func (f *sessionHistoryFile) Read(b []byte) (int, error) {
+	if f.data == nil {
+		f.session.mu.Lock()
+		history := append([]promptMessage(nil), f.session.history...)
+		f.session.mu.Unlock()
+		data, err := json.MarshalIndent(history, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		f.data = append(data, '\n')
+	}
+	if f.off >= len(f.data) {
+		return 0, io.EOF
+	}
+	n := copy(b, f.data[f.off:])
+	f.off += n
+	return n, nil
+}
+
+func (f *sessionHistoryFile) Write(p []byte) (int, error) {
+	f.buf = append(f.buf, p...)
+	return len(p), nil
+}
+
+func (f *sessionHistoryFile) Close() error {
+	if f.buf == nil {
+		return nil
+	}
+	var history []promptMessage
+	if len(bytes.TrimSpace(f.buf)) != 0 {
+		if err := json.Unmarshal(f.buf, &history); err != nil {
+			return &fs.PathError{Op: "write", Path: f.name, Err: err}
+		}
+	}
+	f.session.replaceHistory(history)
+	return nil
+}
+
+func (f *sessionHistoryFile) Truncate(int64) error {
+	f.buf = nil
+	f.session.replaceHistory(nil)
+	return nil
+}
+
 type sessionTextFile struct {
 	name    string
 	session *session
@@ -541,6 +663,7 @@ func (f *sessionTextFile) Close() error {
 		return nil
 	}
 	text := string(f.buf)
+	var reset bool
 	f.session.mu.Lock()
 	switch f.field {
 	case "prefill":
@@ -549,13 +672,18 @@ func (f *sessionTextFile) Close() error {
 		f.session.schema = text
 	case "system":
 		f.session.system = text
+		reset = true
 	}
 	f.session.mu.Unlock()
+	if reset {
+		f.session.resetBrowser()
+	}
 	return nil
 }
 
 func (f *sessionTextFile) Truncate(int64) error {
 	f.buf = nil
+	var reset bool
 	f.session.mu.Lock()
 	switch f.field {
 	case "prefill":
@@ -564,8 +692,12 @@ func (f *sessionTextFile) Truncate(int64) error {
 		f.session.schema = ""
 	case "system":
 		f.session.system = ""
+		reset = true
 	}
 	f.session.mu.Unlock()
+	if reset {
+		f.session.resetBrowser()
+	}
 	return nil
 }
 
@@ -1037,32 +1169,78 @@ type streamOptions struct {
 }
 
 type promptMessage struct {
-	role    string
-	content string
-	prefix  bool
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	Prefix  bool   `json:"prefix,omitempty"`
+}
+
+func (s *session) browserSession() (js.Value, error) {
+	s.mu.Lock()
+	if s.browser.Truthy() {
+		browser := s.browser
+		s.mu.Unlock()
+		return browser, nil
+	}
+	system := s.system
+	history := append([]promptMessage(nil), s.history...)
+	s.mu.Unlock()
+
+	browser, err := createPromptSession(system, history)
+	if err != nil {
+		return js.Undefined(), err
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		destroySession(browser)
+		return js.Undefined(), fs.ErrClosed
+	}
+	if s.browser.Truthy() {
+		existing := s.browser
+		s.mu.Unlock()
+		destroySession(browser)
+		return existing, nil
+	}
+	s.browser = browser
+	s.mu.Unlock()
+	updateSessionContext(s, browser)
+	return browser, nil
 }
 
 func runPromptStream(prompt string, out chan<- promptOutcome, opts streamOptions) error {
-	api, err := promptAPI()
+	session, err := createPromptSession(opts.system, opts.history)
 	if err != nil {
 		return err
+	}
+	defer destroySession(session)
+	return runPromptWithSession(session, prompt, out, opts)
+}
+
+func createPromptSession(system string, history []promptMessage) (js.Value, error) {
+	api, err := promptAPI()
+	if err != nil {
+		return js.Undefined(), err
 	}
 	availability, err := promptAvailability()
 	if err != nil {
-		return err
+		return js.Undefined(), err
 	}
 	if availability != "available" {
-		return fmt.Errorf("llm unavailable: %s", availability)
+		return js.Undefined(), fmt.Errorf("llm unavailable: %s", availability)
 	}
 	createOpts := languageModelOptions()
-	if opts.system != "" || len(opts.history) != 0 {
-		createOpts.Set("initialPrompts", initialPrompts(opts.system, opts.history))
+	if system != "" || len(history) != 0 {
+		createOpts.Set("initialPrompts", initialPrompts(system, history))
 	}
 	session, err := awaitErr(api.Call("create", createOpts), 30*time.Second)
 	if err != nil {
-		return fmt.Errorf("llm create: %w", err)
+		return js.Undefined(), fmt.Errorf("llm create: %w", err)
 	}
-	defer destroySession(session)
+	return session, nil
+}
+
+func runPromptWithSession(session js.Value, prompt string, out chan<- promptOutcome, opts streamOptions) error {
 	updateSessionContext(opts.session, session)
 
 	promptOpts, release, err := promptCallOptions(opts)
@@ -1110,8 +1288,8 @@ func initialPrompts(system string, history []promptMessage) js.Value {
 	prompts := js.Global().Get("Array").New()
 	if system != "" {
 		prompts.Call("push", promptMessageValue(promptMessage{
-			role:    "system",
-			content: system,
+			Role:    "system",
+			Content: system,
 		}))
 	}
 	for _, msg := range history {
@@ -1126,22 +1304,22 @@ func promptArgument(prompt, prefill string) js.Value {
 	}
 	messages := js.Global().Get("Array").New()
 	messages.Call("push", promptMessageValue(promptMessage{
-		role:    "user",
-		content: prompt,
+		Role:    "user",
+		Content: prompt,
 	}))
 	messages.Call("push", promptMessageValue(promptMessage{
-		role:    "assistant",
-		content: prefill,
-		prefix:  true,
+		Role:    "assistant",
+		Content: prefill,
+		Prefix:  true,
 	}))
 	return messages
 }
 
 func promptMessageValue(msg promptMessage) js.Value {
 	item := js.Global().Get("Object").New()
-	item.Set("role", msg.role)
-	item.Set("content", msg.content)
-	if msg.prefix {
+	item.Set("role", msg.Role)
+	item.Set("content", msg.Content)
+	if msg.Prefix {
 		item.Set("prefix", true)
 	}
 	return item

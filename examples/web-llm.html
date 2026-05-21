@@ -189,22 +189,42 @@
         <wanix-bind type="file" dst="prompt.txt" mode="0644">
 Write one sentence about how Go and Plan 9 share a philosophy.
         </wanix-bind>
+        <wanix-bind type="file" dst="prompt-go.txt" mode="0644">
+Explain why Go code often favors small interfaces.
+        </wanix-bind>
+        <wanix-bind type="file" dst="prompt-plan9.txt" mode="0644">
+Describe namespaces as if you were introducing Plan 9 to a shell user.
+        </wanix-bind>
+        <wanix-bind type="file" dst="prompt-followup.txt" mode="0644">
+Continue with one concrete example.
+        </wanix-bind>
         <wanix-bind type="file" dst="README" mode="0644">
 Browser Prompt API is mounted at llm and web/llm.
 
-Try:
+One-shot:
 
   cat llm/status
   echo download > llm/ctl
+  openfile llm/prompt < prompt.txt
+
+Two live conversations after a fresh page load:
+
   cat llm/new
-  echo 'Answer tersely.' > llm/1/system
-  cat prompt.txt > llm/1/prompt
+  cat llm/new
+  echo 'You are a terse Go systems programmer.' > llm/1/system
+  echo 'You are a lyrical Plan 9 guide.' > llm/2/system
+  cat prompt-go.txt > llm/1/prompt
   cat llm/1/output
-  echo 'Go and Plan 9 both ' > llm/1/prefill
-  echo 'Continue with one more sentence.' > llm/1/prompt
+  cat prompt-plan9.txt > llm/2/prompt
+  cat llm/2/output
+  cat prompt-followup.txt > llm/1/prompt
   cat llm/1/output
+  echo continue > llm/2/ctl
+  cat llm/2/output
+  cat llm/1/history
   cat llm/1/status
   echo close > llm/1/ctl
+  echo close > llm/2/ctl
         </wanix-bind>
 
         <wanix-task id="rc" cmd="rc.wasm" type="gojs" term start></wanix-task>
@@ -238,15 +258,25 @@ Try:
                 <h2>Try in rc</h2>
                 <pre>cat llm/status
 echo download &gt; llm/ctl
+openfile llm/prompt &lt; prompt.txt
+
+# On a fresh page, these reads return 1 and 2.
 cat llm/new
-echo 'Answer tersely.' &gt; llm/1/system
-cat prompt.txt &gt; llm/1/prompt
+cat llm/new
+echo 'You are a terse Go systems programmer.' &gt; llm/1/system
+echo 'You are a lyrical Plan 9 guide.' &gt; llm/2/system
+cat prompt-go.txt &gt; llm/1/prompt
 cat llm/1/output
-echo 'Go and Plan 9 both ' &gt; llm/1/prefill
-echo 'Continue with one more sentence.' &gt; llm/1/prompt
+cat prompt-plan9.txt &gt; llm/2/prompt
+cat llm/2/output
+cat prompt-followup.txt &gt; llm/1/prompt
 cat llm/1/output
+echo continue &gt; llm/2/ctl
+cat llm/2/output
+cat llm/1/history
 cat llm/1/status
-echo close &gt; llm/1/ctl</pre>
+echo close &gt; llm/1/ctl
+echo close &gt; llm/2/ctl</pre>
             </section>
             <pre id="llm-status">waiting for Wanix</pre>
         </aside>

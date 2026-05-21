@@ -27,6 +27,7 @@ Files:
   - `prefill`: read/write assistant response prefix. The next prompt sends it
     as a trailing assistant message with `prefix: true`.
   - `schema`: read/write JSON Schema passed as `responseConstraint`.
+  - `history`: read/write JSON prompt history used for restore.
   - `clone`: read to allocate a copy of this session's prompts and history.
   - `ctl`: write `stop`, `continue`, or `close`.
   - `status`: read session state, including context usage when the browser
@@ -41,10 +42,11 @@ If the browser does not provide `LanguageModel`, `availability` reports
 `available`. `downloadable` and `downloading` fail closed; write `download` to
 `ctl` as the explicit model setup action.
 
-This is intentionally a small Wanix-facing surface. Long-term session state is
-represented as stored user and assistant turns, then restored with
-`initialPrompts` when the next browser session is created. Browser-native
-opaque session persistence is not exposed.
+Allocated sessions keep a live browser `LanguageModel` session across prompts
+until `ctl close`. Long-term state is also represented as stored user and
+assistant turns in `history`, so a session can be restored with
+`initialPrompts` when a live browser session must be recreated. Browser-native
+opaque session persistence across page reloads is not exposed.
 
 Bind it into a namespace like any other Wanix filesystem:
 
@@ -61,14 +63,21 @@ echo download > web/llm/ctl
 echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
 openfile web/llm/prompt < prompt.txt
 openfile llm/chat/output < prompt.txt
+# On a fresh page, these reads return 1 and 2.
 cat llm/new
-echo 'Answer tersely, in plain English.' > llm/1/system
-echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > llm/1/prompt
+cat llm/new
+echo 'You are a terse Go systems programmer.' > llm/1/system
+echo 'You are a lyrical Plan 9 guide.' > llm/2/system
+echo 'Explain why Go code often favors small interfaces.' > llm/1/prompt
 cat llm/1/output
+echo 'Describe namespaces as if introducing Plan 9 to a shell user.' > llm/2/prompt
+cat llm/2/output
 echo continue > llm/1/ctl
 cat llm/1/output
+cat llm/1/history
 cat llm/1/clone
 echo close > llm/1/ctl
+echo close > llm/2/ctl
 ```
 
 ## Streaming design
@@ -95,6 +104,7 @@ llm/
     system     read/write system prompt
     prefill    read/write assistant prefix for the next response
     schema     read/write JSON Schema response constraint
+    history    read/write JSON prompt history
     clone      read to allocate a forked session
     ctl        session commands: stop, continue, close
     prompt     write prompt text
