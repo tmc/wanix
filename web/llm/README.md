@@ -21,10 +21,16 @@ Files:
 - `status`: read-only JSON with API presence, availability, download state,
   user agent, and last availability error when available.
 - `<id>/`: a session directory allocated by `new`.
+  - `system`: read/write system prompt used when creating browser sessions.
   - `prompt`: write prompts here.
   - `output`: read streamed response bytes.
-  - `ctl`: write `close` to remove the session.
-  - `status`: read session state.
+  - `prefill`: read/write assistant response prefix. The next prompt sends it
+    as a trailing assistant message with `prefix: true`.
+  - `schema`: read/write JSON Schema passed as `responseConstraint`.
+  - `clone`: read to allocate a copy of this session's prompts and history.
+  - `ctl`: write `stop`, `continue`, or `close`.
+  - `status`: read session state, including context usage when the browser
+    exposes it.
 
 The implementation uses `globalThis.LanguageModel.availability()`,
 `LanguageModel.create()`, `session.promptStreaming()`, and `session.prompt()`.
@@ -35,9 +41,10 @@ If the browser does not provide `LanguageModel`, `availability` reports
 `available`. `downloadable` and `downloading` fail closed; write `download` to
 `ctl` as the explicit model setup action.
 
-This is intentionally a small Wanix-facing surface. It does not preserve
-conversation sessions between opens or expose sampling options. Those can be
-added as explicit files once the basic contract is useful.
+This is intentionally a small Wanix-facing surface. Long-term session state is
+represented as stored user and assistant turns, then restored with
+`initialPrompts` when the next browser session is created. Browser-native
+opaque session persistence is not exposed.
 
 Bind it into a namespace like any other Wanix filesystem:
 
@@ -55,8 +62,12 @@ echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.t
 openfile web/llm/prompt < prompt.txt
 openfile llm/chat/output < prompt.txt
 cat llm/new
+echo 'Answer tersely, in plain English.' > llm/1/system
 echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > llm/1/prompt
 cat llm/1/output
+echo continue > llm/1/ctl
+cat llm/1/output
+cat llm/1/clone
 echo close > llm/1/ctl
 ```
 
@@ -81,7 +92,11 @@ llm/
   ctl          global commands, such as download
   status       global status
   <id>/
-    ctl        session commands: stop, reset, close
+    system     read/write system prompt
+    prefill    read/write assistant prefix for the next response
+    schema     read/write JSON Schema response constraint
+    clone      read to allocate a forked session
+    ctl        session commands: stop, continue, close
     prompt     write prompt text
     output     read streamed response bytes
     status     session status

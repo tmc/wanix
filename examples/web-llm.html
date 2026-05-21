@@ -197,8 +197,13 @@ Try:
   cat llm/status
   echo download > llm/ctl
   cat llm/new
+  echo 'Answer tersely.' > llm/1/system
   cat prompt.txt > llm/1/prompt
   cat llm/1/output
+  echo 'Go and Plan 9 both ' > llm/1/prefill
+  echo 'Continue with one more sentence.' > llm/1/prompt
+  cat llm/1/output
+  cat llm/1/status
   echo close > llm/1/ctl
         </wanix-bind>
 
@@ -234,8 +239,13 @@ Try:
                 <pre>cat llm/status
 echo download &gt; llm/ctl
 cat llm/new
+echo 'Answer tersely.' &gt; llm/1/system
 cat prompt.txt &gt; llm/1/prompt
 cat llm/1/output
+echo 'Go and Plan 9 both ' &gt; llm/1/prefill
+echo 'Continue with one more sentence.' &gt; llm/1/prompt
+cat llm/1/output
+cat llm/1/status
 echo close &gt; llm/1/ctl</pre>
             </section>
             <pre id="llm-status">waiting for Wanix</pre>

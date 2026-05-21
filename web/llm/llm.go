@@ -51,6 +51,15 @@ func (fsys *FS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, erro
 	if strings.HasSuffix(name, "/prompt") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
 		return openSessionPath(name)
 	}
+	if strings.HasSuffix(name, "/prefill") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+		return openSessionPath(name)
+	}
+	if strings.HasSuffix(name, "/schema") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+		return openSessionPath(name)
+	}
+	if strings.HasSuffix(name, "/system") && flag&(os.O_WRONLY|os.O_RDWR) != 0 {
+		return openSessionPath(name)
+	}
 	return fsys.Open(name)
 }
 
@@ -193,12 +202,34 @@ func newSession() *session {
 	sessions.next++
 	id := strconv.Itoa(sessions.next)
 	s := &session{
-		id:      id,
-		created: time.Now(),
-		output:  make(chan promptOutcome, 64),
-		state:   "idle",
+		id:         id,
+		created:    time.Now(),
+		controller: js.Undefined(),
+		output:     make(chan promptOutcome, 64),
+		state:      "idle",
 	}
 	sessions.byID[id] = s
+	return s
+}
+
+func cloneSession(src *session) *session {
+	src.mu.Lock()
+	system := src.system
+	prefill := src.prefill
+	schema := src.schema
+	history := append([]promptMessage(nil), src.history...)
+	lastUser := src.lastUser
+	lastAnswer := src.lastAnswer
+	src.mu.Unlock()
+	s := newSession()
+	s.mu.Lock()
+	s.system = system
+	s.prefill = prefill
+	s.schema = schema
+	s.history = history
+	s.lastUser = lastUser
+	s.lastAnswer = lastAnswer
+	s.mu.Unlock()
 	return s
 }
 
@@ -216,14 +247,24 @@ func removeSession(id string) {
 }
 
 type session struct {
-	mu      sync.Mutex
-	id      string
-	created time.Time
-	state   string
-	err     string
-	output  chan promptOutcome
-	closed  bool
-	wg      sync.WaitGroup
+	mu          sync.Mutex
+	id          string
+	created     time.Time
+	state       string
+	err         string
+	system      string
+	prefill     string
+	schema      string
+	lastUser    string
+	lastAnswer  string
+	history     []promptMessage
+	contextWin  int
+	contextUse  int
+	controller  js.Value
+	controllerF func()
+	output      chan promptOutcome
+	closed      bool
+	wg          sync.WaitGroup
 }
 
 func (s *session) start(prompt string) error {
@@ -234,11 +275,13 @@ func (s *session) start(prompt string) error {
 	}
 	s.state = "running"
 	s.err = ""
+	s.lastUser = prompt
+	s.lastAnswer = ""
 	s.wg.Add(1)
 	s.mu.Unlock()
 	go func() {
 		defer s.wg.Done()
-		if err := runPromptStream(prompt, s.output); err != nil {
+		if err := s.run(prompt); err != nil {
 			s.mu.Lock()
 			s.state = "error"
 			s.err = err.Error()
@@ -257,6 +300,44 @@ func (s *session) start(prompt string) error {
 	return nil
 }
 
+func (s *session) run(prompt string) error {
+	s.mu.Lock()
+	system := s.system
+	prefill := s.prefill
+	schema := s.schema
+	history := append([]promptMessage(nil), s.history...)
+	s.mu.Unlock()
+	var answer strings.Builder
+	err := runPromptStream(prompt, s.output, streamOptions{
+		system:  system,
+		prefill: prefill,
+		schema:  schema,
+		history: history,
+		answer:  &answer,
+		session: s,
+	})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.lastAnswer = answer.String()
+	s.history = append(s.history,
+		promptMessage{role: "user", content: prompt},
+		promptMessage{role: "assistant", content: s.lastAnswer},
+	)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *session) stop() {
+	s.mu.Lock()
+	controller := s.controller
+	s.mu.Unlock()
+	if controller.Truthy() {
+		controller.Call("abort")
+	}
+}
+
 func (s *session) close() {
 	s.mu.Lock()
 	if s.closed {
@@ -265,7 +346,11 @@ func (s *session) close() {
 	}
 	s.closed = true
 	s.state = "closed"
+	controller := s.controller
 	s.mu.Unlock()
+	if controller.Truthy() {
+		controller.Call("abort")
+	}
 	s.wg.Wait()
 	close(s.output)
 	removeSession(s.id)
@@ -279,6 +364,26 @@ func (s *session) status() map[string]any {
 		"state":           s.state,
 		"created":         s.created.Format(time.RFC3339),
 		"elapsed_seconds": time.Since(s.created).Seconds(),
+	}
+	if s.system != "" {
+		status["system"] = true
+	}
+	if s.prefill != "" {
+		status["prefill"] = true
+	}
+	if s.schema != "" {
+		status["schema"] = true
+	}
+	if len(s.history) != 0 {
+		status["turns"] = len(s.history) / 2
+	}
+	if s.lastUser != "" {
+		status["last_user"] = s.lastUser
+	}
+	if s.contextWin != 0 {
+		status["context_window"] = s.contextWin
+		status["context_usage"] = s.contextUse
+		status["context_left"] = s.contextWin - s.contextUse
 	}
 	if s.err != "" {
 		status["error"] = s.err
@@ -299,14 +404,22 @@ func openSessionPath(name string) (fs.File, error) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
 	switch elem {
+	case "clone":
+		return sessionCloneFile(s), nil
 	case "ctl":
 		return &sessionCtlFile{name: path.Base(elem), session: s}, nil
 	case "prompt":
 		return &sessionPromptFile{name: path.Base(elem), session: s}, nil
 	case "output":
 		return &sessionOutputFile{name: path.Base(elem), session: s}, nil
+	case "prefill":
+		return &sessionTextFile{name: path.Base(elem), session: s, field: "prefill"}, nil
+	case "schema":
+		return &sessionTextFile{name: path.Base(elem), session: s, field: "schema"}, nil
 	case "status":
 		return sessionStatusFile(s), nil
+	case "system":
+		return &sessionTextFile{name: path.Base(elem), session: s, field: "system"}, nil
 	default:
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
@@ -314,10 +427,14 @@ func openSessionPath(name string) (fs.File, error) {
 
 func sessionDir(*session) fs.File {
 	return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
+		fskit.Entry("clone", 0444),
 		fskit.Entry("ctl", 0222),
 		fskit.Entry("output", 0444),
+		fskit.Entry("prefill", 0666),
 		fskit.Entry("prompt", 0222),
+		fskit.Entry("schema", 0666),
 		fskit.Entry("status", 0444),
+		fskit.Entry("system", 0666),
 	)
 }
 
@@ -346,6 +463,17 @@ func sessionStatusFile(s *session) fs.File {
 	}
 }
 
+func sessionCloneFile(s *session) fs.File {
+	return &fskit.FuncFile{
+		Node: fskit.Entry("clone", 0444),
+		ReadFunc: func(n *fskit.Node) error {
+			clone := cloneSession(s)
+			fskit.SetData(n, []byte(clone.id+"\n"))
+			return nil
+		},
+	}
+}
+
 type sessionCtlFile struct {
 	name    string
 	session *session
@@ -363,6 +491,12 @@ func (f *sessionCtlFile) Write(p []byte) (int, error) {
 	switch string(bytes.TrimSpace(p)) {
 	case "close":
 		f.session.close()
+	case "continue":
+		if err := f.session.start("Continue."); err != nil {
+			return 0, err
+		}
+	case "stop":
+		f.session.stop()
 	default:
 		return 0, &fs.PathError{Op: "write", Path: f.name, Err: fs.ErrInvalid}
 	}
@@ -371,6 +505,81 @@ func (f *sessionCtlFile) Write(p []byte) (int, error) {
 
 func (f *sessionCtlFile) Close() error {
 	return nil
+}
+
+type sessionTextFile struct {
+	name    string
+	session *session
+	field   string
+	buf     []byte
+	off     int
+}
+
+func (f *sessionTextFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(f.name, 0666), nil
+}
+
+func (f *sessionTextFile) Read(b []byte) (int, error) {
+	f.session.mu.Lock()
+	text := f.textLocked()
+	f.session.mu.Unlock()
+	if f.off >= len(text) {
+		return 0, io.EOF
+	}
+	n := copy(b, text[f.off:])
+	f.off += n
+	return n, nil
+}
+
+func (f *sessionTextFile) Write(p []byte) (int, error) {
+	f.buf = append(f.buf, p...)
+	return len(p), nil
+}
+
+func (f *sessionTextFile) Close() error {
+	if f.buf == nil {
+		return nil
+	}
+	text := string(f.buf)
+	f.session.mu.Lock()
+	switch f.field {
+	case "prefill":
+		f.session.prefill = text
+	case "schema":
+		f.session.schema = text
+	case "system":
+		f.session.system = text
+	}
+	f.session.mu.Unlock()
+	return nil
+}
+
+func (f *sessionTextFile) Truncate(int64) error {
+	f.buf = nil
+	f.session.mu.Lock()
+	switch f.field {
+	case "prefill":
+		f.session.prefill = ""
+	case "schema":
+		f.session.schema = ""
+	case "system":
+		f.session.system = ""
+	}
+	f.session.mu.Unlock()
+	return nil
+}
+
+func (f *sessionTextFile) textLocked() []byte {
+	var text string
+	switch f.field {
+	case "prefill":
+		text = f.session.prefill
+	case "schema":
+		text = f.session.schema
+	case "system":
+		text = f.session.system
+	}
+	return []byte(text)
 }
 
 type sessionPromptFile struct {
@@ -785,7 +994,7 @@ func promptOnce(prompt string) string {
 }
 
 func streamPrompt(prompt string, out chan<- promptOutcome) {
-	if err := runPromptStream(prompt, out); err != nil {
+	if err := runPromptStream(prompt, out, streamOptions{}); err != nil {
 		out <- promptOutcome{data: []byte("error: " + err.Error() + "\n")}
 		return
 	}
@@ -818,7 +1027,22 @@ func runPrompt(prompt string) (string, error) {
 	return response.String(), nil
 }
 
-func runPromptStream(prompt string, out chan<- promptOutcome) error {
+type streamOptions struct {
+	system  string
+	prefill string
+	schema  string
+	history []promptMessage
+	answer  *strings.Builder
+	session *session
+}
+
+type promptMessage struct {
+	role    string
+	content string
+	prefix  bool
+}
+
+func runPromptStream(prompt string, out chan<- promptOutcome, opts streamOptions) error {
 	api, err := promptAPI()
 	if err != nil {
 		return err
@@ -830,22 +1054,38 @@ func runPromptStream(prompt string, out chan<- promptOutcome) error {
 	if availability != "available" {
 		return fmt.Errorf("llm unavailable: %s", availability)
 	}
-	session, err := awaitErr(api.Call("create", languageModelOptions()), 30*time.Second)
+	createOpts := languageModelOptions()
+	if opts.system != "" || len(opts.history) != 0 {
+		createOpts.Set("initialPrompts", initialPrompts(opts.system, opts.history))
+	}
+	session, err := awaitErr(api.Call("create", createOpts), 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("llm create: %w", err)
 	}
 	defer destroySession(session)
+	updateSessionContext(opts.session, session)
+
+	promptOpts, release, err := promptCallOptions(opts)
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	promptStreaming := session.Get("promptStreaming")
+	promptValue := promptArgument(prompt, opts.prefill)
 	if promptStreaming.IsUndefined() || promptStreaming.IsNull() {
-		response, err := awaitErr(session.Call("prompt", prompt), 2*time.Minute)
+		response, err := awaitErr(session.Call("prompt", promptValue, promptOpts), 2*time.Minute)
 		if err != nil {
 			return fmt.Errorf("llm prompt: %w", err)
 		}
 		out <- promptOutcome{data: []byte(response.String())}
+		if opts.answer != nil {
+			opts.answer.WriteString(response.String())
+		}
+		updateSessionContext(opts.session, session)
 		return nil
 	}
-	stream := session.Call("promptStreaming", prompt)
+	stream := session.Call("promptStreaming", promptValue, promptOpts)
 	reader := stream.Call("getReader")
 	defer reader.Call("releaseLock")
 	for {
@@ -858,9 +1098,107 @@ func runPromptStream(prompt string, out chan<- promptOutcome) error {
 		}
 		chunk := streamChunkBytes(result.Get("value"))
 		if len(chunk) > 0 {
+			if opts.answer != nil {
+				opts.answer.Write(chunk)
+			}
 			out <- promptOutcome{data: chunk}
 		}
 	}
+}
+
+func initialPrompts(system string, history []promptMessage) js.Value {
+	prompts := js.Global().Get("Array").New()
+	if system != "" {
+		prompts.Call("push", promptMessageValue(promptMessage{
+			role:    "system",
+			content: system,
+		}))
+	}
+	for _, msg := range history {
+		prompts.Call("push", promptMessageValue(msg))
+	}
+	return prompts
+}
+
+func promptArgument(prompt, prefill string) js.Value {
+	if prefill == "" {
+		return js.ValueOf(prompt)
+	}
+	messages := js.Global().Get("Array").New()
+	messages.Call("push", promptMessageValue(promptMessage{
+		role:    "user",
+		content: prompt,
+	}))
+	messages.Call("push", promptMessageValue(promptMessage{
+		role:    "assistant",
+		content: prefill,
+		prefix:  true,
+	}))
+	return messages
+}
+
+func promptMessageValue(msg promptMessage) js.Value {
+	item := js.Global().Get("Object").New()
+	item.Set("role", msg.role)
+	item.Set("content", msg.content)
+	if msg.prefix {
+		item.Set("prefix", true)
+	}
+	return item
+}
+
+func promptCallOptions(opts streamOptions) (js.Value, func(), error) {
+	obj := js.Global().Get("Object").New()
+	var release func()
+	release = func() {}
+	if opts.schema != "" {
+		schema, err := parseJSON(opts.schema)
+		if err != nil {
+			return js.Undefined(), release, fmt.Errorf("llm schema: %w", err)
+		}
+		obj.Set("responseConstraint", schema)
+	}
+	controller := js.Global().Get("AbortController").New()
+	obj.Set("signal", controller.Get("signal"))
+	if opts.session != nil {
+		opts.session.mu.Lock()
+		opts.session.controller = controller
+		opts.session.controllerF = release
+		opts.session.mu.Unlock()
+		release = func() {
+			opts.session.mu.Lock()
+			opts.session.controller = js.Undefined()
+			opts.session.controllerF = nil
+			opts.session.mu.Unlock()
+		}
+	}
+	return obj, release, nil
+}
+
+func updateSessionContext(s *session, jsSession js.Value) {
+	if s == nil {
+		return
+	}
+	contextWindow := jsSession.Get("contextWindow")
+	contextUsage := jsSession.Get("contextUsage")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !contextWindow.IsUndefined() && !contextWindow.IsNull() {
+		s.contextWin = contextWindow.Int()
+	}
+	if !contextUsage.IsUndefined() && !contextUsage.IsNull() {
+		s.contextUse = contextUsage.Int()
+	}
+}
+
+func parseJSON(text string) (value js.Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			value = js.Undefined()
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return js.Global().Get("JSON").Call("parse", text), nil
 }
 
 func streamChunkBytes(value js.Value) []byte {
