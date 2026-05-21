@@ -85,22 +85,13 @@ cat llm/new
 echo 'You are a terse Go systems programmer.' > llm/1/system
 echo 'You are a lyrical Plan 9 guide.' > llm/2/system
 
-cat > prompt-go.txt <<'EOF'
-Explain why Go code often favors small interfaces.
-EOF
-cat prompt-go.txt > llm/1/prompt
+echo 'Explain why Go code often favors small interfaces.' > llm/1/prompt
 cat llm/1/output
 
-cat > prompt-plan9.txt <<'EOF'
-Describe namespaces as if introducing Plan 9 to a shell user.
-EOF
-cat prompt-plan9.txt > llm/2/prompt
+echo 'Describe namespaces as if introducing Plan 9 to a shell user.' > llm/2/prompt
 cat llm/2/output
 
-cat > prompt-followup.txt <<'EOF'
-Continue with one concrete example.
-EOF
-cat prompt-followup.txt > llm/1/prompt
+echo 'Continue with one concrete example.' > llm/1/prompt
 cat llm/1/output
 
 echo continue > llm/2/ctl
@@ -138,9 +129,7 @@ Write a JSON Schema to `<id>/schema` to pass it as `responseConstraint`:
 
 ```sh
 cat llm/new
-cat > llm/3/schema <<'EOF'
-{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}
-EOF
+echo '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}' > llm/3/schema
 echo 'Return a JSON object whose answer says ok.' > llm/3/prompt
 cat llm/3/output
 echo close > llm/3/ctl
