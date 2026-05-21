@@ -42,6 +42,8 @@ Session files under `<id>/`:
 - `schema`: read/write JSON Schema passed as `responseConstraint`.
 - `history`: read/write JSON prompt history. Writing replaces the history and
   resets the live browser session.
+- `context`: read-only JSON prompt context, including the effective system
+  prompt followed by user and assistant history.
 - `clone`: read-only allocator that copies the session and prints the new id.
 - `ctl`: write-only session control file.
   - `stop`: abort the current prompt.
@@ -94,6 +96,7 @@ echo continue > llm/2/ctl
 cat llm/2/output
 
 cat llm/1/history
+cat llm/1/context
 cat llm/1/status
 cat llm/1/clone
 
@@ -107,8 +110,8 @@ browser session must be recreated, the recorded turns are supplied as
 `initialPrompts`.
 
 System prompts are not stored in `<id>/history`; that file contains user and
-assistant turns only. Use `<id>/status` to see whether a global or session
-system prompt is active.
+assistant turns only. Use `<id>/context` to inspect the effective system prompt
+and replayable turns sent to the model.
 
 For separate input and output files:
 

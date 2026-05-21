@@ -570,6 +570,8 @@ func openSessionPath(name string) (fs.File, error) {
 	switch elem {
 	case "clone":
 		return sessionCloneFile(s), nil
+	case "context":
+		return &sessionContextFile{name: path.Base(elem), session: s}, nil
 	case "ctl":
 		return &sessionCtlFile{name: path.Base(elem), session: s}, nil
 	case "history":
@@ -594,6 +596,7 @@ func openSessionPath(name string) (fs.File, error) {
 func sessionDir(*session) fs.File {
 	return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 		fskit.Entry("clone", 0444),
+		fskit.Entry("context", 0444),
 		fskit.Entry("ctl", 0222),
 		fskit.Entry("history", 0666),
 		fskit.Entry("output", 0444),
@@ -727,6 +730,46 @@ func (f *sessionHistoryFile) Close() error {
 func (f *sessionHistoryFile) Truncate(int64) error {
 	f.buf = nil
 	f.session.replaceHistory(nil)
+	return nil
+}
+
+type sessionContextFile struct {
+	name    string
+	session *session
+	data    []byte
+	off     int
+}
+
+func (f *sessionContextFile) Stat() (fs.FileInfo, error) {
+	return fskit.Entry(f.name, 0444), nil
+}
+
+func (f *sessionContextFile) Read(b []byte) (int, error) {
+	if f.data == nil {
+		f.session.mu.Lock()
+		system := combinedSystemPrompt(f.session.system)
+		history := append([]promptMessage(nil), f.session.history...)
+		f.session.mu.Unlock()
+		context := make([]promptMessage, 0, len(history)+1)
+		if system != "" {
+			context = append(context, promptMessage{Role: "system", Content: system})
+		}
+		context = append(context, history...)
+		data, err := json.MarshalIndent(context, "", "  ")
+		if err != nil {
+			return 0, err
+		}
+		f.data = append(data, '\n')
+	}
+	if f.off >= len(f.data) {
+		return 0, io.EOF
+	}
+	n := copy(b, f.data[f.off:])
+	f.off += n
+	return n, nil
+}
+
+func (f *sessionContextFile) Close() error {
 	return nil
 }
 
