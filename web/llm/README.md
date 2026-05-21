@@ -54,7 +54,10 @@ Bind it into a namespace like any other Wanix filesystem:
 <wanix-bind dst="llm" src="#web/llm"></wanix-bind>
 ```
 
-From rc:
+## rc examples
+
+The one-shot files are useful when you do not need conversation state. They
+create a browser session for the prompt and close it after the response:
 
 ```sh
 cat web/llm/availability
@@ -63,21 +66,56 @@ echo download > web/llm/ctl
 echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
 openfile web/llm/prompt < prompt.txt
 openfile llm/chat/output < prompt.txt
+```
+
+Use allocated session directories when you want system prompts, continuation,
+history, cloning, structured output, or stop/close controls. `new` prints the
+session id it allocated. The example below assumes a fresh page where the first
+two reads return `1` and `2`; if you have already created sessions, use the ids
+printed by `cat llm/new`.
+
+```sh
 # On a fresh page, these reads return 1 and 2.
 cat llm/new
 cat llm/new
 echo 'You are a terse Go systems programmer.' > llm/1/system
 echo 'You are a lyrical Plan 9 guide.' > llm/2/system
-echo 'Explain why Go code often favors small interfaces.' > llm/1/prompt
+cat > prompt-go.txt <<'EOF'
+Explain why Go code often favors small interfaces.
+EOF
+cat prompt-go.txt > llm/1/prompt
 cat llm/1/output
-echo 'Describe namespaces as if introducing Plan 9 to a shell user.' > llm/2/prompt
+cat > prompt-plan9.txt <<'EOF'
+Describe namespaces as if introducing Plan 9 to a shell user.
+EOF
+cat prompt-plan9.txt > llm/2/prompt
 cat llm/2/output
-echo continue > llm/1/ctl
+cat > prompt-followup.txt <<'EOF'
+Continue with one concrete example.
+EOF
+cat prompt-followup.txt > llm/1/prompt
 cat llm/1/output
+echo continue > llm/2/ctl
+cat llm/2/output
 cat llm/1/history
 cat llm/1/clone
 echo close > llm/1/ctl
 echo close > llm/2/ctl
+```
+
+`llm/<id>/prompt` is write-only. Do not use `openfile llm/<id>/prompt <
+prompt.txt`; write the prompt, then read `llm/<id>/output`.
+
+Structured output is a session option:
+
+```sh
+cat llm/new
+cat > llm/3/schema <<'EOF'
+{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}
+EOF
+echo 'Return a JSON object whose answer says ok.' > llm/3/prompt
+cat llm/3/output
+echo close > llm/3/ctl
 ```
 
 ## Streaming design
