@@ -1,0 +1,10 @@
+codex-commit: f55bab95d9508ea1f66f4ea40b9e02744e07c1c7
+commit-date: 2026-05-17T04:36:44-07:00
+agent: codex
+codex-version: not available
+model: gpt-5
+tty: not-a-tty
+pid: 60661
+iterm_session_id: w1t6p12:A5CBA8D5-7A4E-407D-9345-71BECEE87DD5
+rebased-from: ad52f97c0f82cb742cf6c483b8fc8464b99c9af0
+rebase-reason: move archive RPC to base per history audit
