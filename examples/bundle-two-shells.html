@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Wanix bundle two-shell example</title>
+    <script type="module" src="../dist/wanix.min.js"></script>
+    <style>
+        body {
+            margin: 16px;
+            font-family: system-ui, sans-serif;
+        }
+        .shells {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            align-items: start;
+            gap: 12px;
+        }
+        section {
+            display: grid;
+            grid-template-rows: auto 340px auto;
+            min-width: 0;
+            gap: 8px;
+        }
+        #source-terminal,
+        #target-terminal {
+            min-height: 0;
+        }
+        wanix-term {
+            height: 100%;
+            border: 1px solid #ccc;
+        }
+        pre {
+            max-height: 180px;
+            overflow: auto;
+            white-space: pre-wrap;
+        }
+        .controls {
+            display: flex;
+            gap: 8px;
+            margin: 12px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Wanix bundle two-shell example</h1>
+
+    <div class="controls">
+        <button id="resync" type="button" disabled>Sync workspace</button>
+        <button id="download" type="button" disabled>Download bundle</button>
+        <button id="load" type="button">Load bundle</button>
+        <input id="bundle-file" type="file" accept="application/json,.json" hidden/>
+    </div>
+
+    <div class="shells">
+        <section>
+            <h2>Source</h2>
+            <div id="source-terminal"></div>
+            <pre id="source-output">starting source...</pre>
+        </section>
+        <section>
+            <h2>Target</h2>
+            <div id="target-terminal"></div>
+            <pre id="target-output">starting target...</pre>
+        </section>
+    </div>
+
+    <h2>Bundle</h2>
+    <pre id="output">running...</pre>
+
+    <wanix-system id="source" wasm="../dist/wanix.debug.wasm" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+    <wanix-system id="target" wasm="../dist/wanix.debug.wasm" debug>
+        <wanix-bind dst="." src="#ramfs"></wanix-bind>
+    </wanix-system>
+
+    <script type="module">
+        const workspacePath = "workspace";
+        const proofPath = `${workspacePath}/proof.txt`;
+        const notesPath = `${workspacePath}/notes/today.txt`;
+        const workerDir = `${workspacePath}/.wanix-demo`;
+        const workerPath = `${workerDir}/checkpoint-worker.js`;
+        const decoder = new TextDecoder();
+        const output = document.querySelector("#output");
+        const sourceOutput = document.querySelector("#source-output");
+        const targetOutput = document.querySelector("#target-output");
+        const resyncButton = document.querySelector("#resync");
+        const downloadButton = document.querySelector("#download");
+        const loadButton = document.querySelector("#load");
+        const bundleFile = document.querySelector("#bundle-file");
+        let currentBundle;
+
+        window.wanixTwoShellDemoEncodedBundle = () => currentBundle ? window.WanixEncodeBundle(currentBundle) : null;
+        window.wanixTwoShellDemoLoadBundle = encoded => importBundle(window.WanixDecodeBundle(encoded), "test bundle");
+
+        const show = (el, text) => el.textContent = text;
+        function bundleSummary(bundle, options={}) {
+            const lines = [`archives: ${(bundle.archives || []).map(archive => archive.id).join(", ") || "none"}`];
+            if (options.states !== false) {
+                lines.push(`checkpoint states: ${(bundle.states || []).map(state => `${state.kind || "state"}:${state.id}`).join(", ") || "none"}`);
+            }
+            return lines.join("\n");
+        }
+
+        async function waitFor(label, fn, timeoutMs=10000) {
+            const deadline = Date.now() + timeoutMs;
+            let last;
+            while (Date.now() < deadline) {
+                try {
+                    const value = await fn();
+                    if (value) return value;
+                } catch (error) {
+                    last = error;
+                }
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+            throw new Error(`${label}: ${last ? last.message || last : "timeout"}`);
+        }
+
+        function taskState(states, id) {
+            const state = states.find(state => state.id === id);
+            if (!state) return null;
+            return JSON.parse(typeof state.data === "string" ? state.data : decoder.decode(state.data));
+        }
+
+        async function removeOldDemoDir(system) {
+            try {
+                await system.root.removeAll("wanix-demo");
+            } catch {
+                // Older versions used this visible directory; absence is fine.
+            }
+            try {
+                await system.root.removeAll(".wanix-demo");
+            } catch {
+                // The helper now lives inside the workspace bundle.
+            }
+        }
+
+        async function installCheckpointWorker(system) {
+            await removeOldDemoDir(system);
+            await system.root.makeDirAll(workspacePath);
+            await system.root.makeDirAll(workerDir);
+            await system.root.writeFile(workerPath, `
+                const encoder = new TextEncoder();
+                const decoder = new TextDecoder();
+                let checkpoint = {label: "source", restored: false};
+                globalThis.WanixCheckpoint.install({
+                    load(state) {
+                        checkpoint = JSON.parse(decoder.decode(state));
+                        checkpoint.restored = true;
+                    },
+                    save() {
+                        return encoder.encode(JSON.stringify(checkpoint));
+                    },
+                });
+            `);
+        }
+
+        async function startShell(system, host, label) {
+            const rc = await fetch("./repl-rc/rc.wasm");
+            if (!rc.ok) throw new Error(`fetch rc.wasm: HTTP ${rc.status}`);
+            await system.root.writeFile("rc.wasm", new Uint8Array(await rc.arrayBuffer()));
+            const task = await system.startTask({
+                kind: "gojs",
+                cmd: "rc.wasm",
+                alias: `${label}-rc`,
+                term: true,
+                dir: "/",
+            });
+            system.attachTerminal(host, task.termPath, {fontSize: 12, scrollback: 2000})
+                .catch(error => show(output, `connect ${label} terminal: ${error.message || error}`));
+            return {id: task.id, termPath: task.termPath};
+        }
+
+        async function importBundle(bundle, label="bundle") {
+            const target = document.querySelector("#target");
+            const restore = await target.root.importBundle(bundle, {replace: true});
+            const proof = await target.root.readText(proofPath);
+            const notes = await target.root.readText(notesPath);
+            show(targetOutput, [
+                `interactive rc shell`,
+                `loaded ${label}; restored tasks: ${(restore.tasks || []).join(", ") || "none"}`,
+                `workspace files restored`,
+            ].join("\n"));
+            show(output, bundleSummary(bundle));
+            document.body.dataset.result = JSON.stringify({ok: true, label, restore, proof, notes});
+            return {label, restore, proof, notes};
+        }
+
+        async function resyncBundle() {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            const transfer = await target.root.importPathBundleFrom(source.root, workspacePath, {
+                export: {state: false},
+            });
+            currentBundle = transfer.bundle;
+            const proof = await target.root.readText(proofPath);
+            const notes = await target.root.readText(notesPath);
+            show(targetOutput, [
+                `interactive rc shell`,
+                `workspace synced`,
+                `workspace files: proof.txt, notes/today.txt`,
+            ].join("\n"));
+            show(output, [
+                `workspace sync complete`,
+                `filesystem-only bundle`,
+                bundleSummary(transfer.bundle, {states: false}),
+            ].join("\n"));
+            document.body.dataset.result = JSON.stringify({
+                ok: true,
+                action: "resync",
+                proof,
+                notes,
+                archives: transfer.bundle.archives.map(archive => archive.id),
+                states: transfer.bundle.states.map(state => [state.kind || "", state.id, state.path || state.state_path || ""]),
+                restore: transfer.restore,
+            });
+            return transfer;
+        }
+
+        resyncButton.addEventListener("click", () => resyncBundle().catch(error => show(output, String(error))));
+        downloadButton.addEventListener("click", () => window.WanixDownloadBundle(currentBundle));
+        loadButton.addEventListener("click", () => bundleFile.click());
+        bundleFile.addEventListener("change", async event => {
+            const file = event.target.files && event.target.files[0];
+            event.target.value = "";
+            if (!file) return;
+            try {
+                currentBundle = window.WanixDecodeBundle(JSON.parse(await file.text()));
+                await importBundle(currentBundle, file.name);
+            } catch (error) {
+                show(output, String(error && error.message || error));
+            }
+        });
+
+        window.wanixTwoShellDemoResult = (async () => {
+            const source = document.querySelector("#source");
+            const target = document.querySelector("#target");
+            await Promise.all([source.ready(), target.ready()]);
+            await Promise.all([removeOldDemoDir(source), removeOldDemoDir(target)]);
+
+            await source.root.makeDirAll(workspacePath);
+            await source.root.makeDirAll(workerDir);
+            await source.root.makeDirAll(`${workspacePath}/notes`);
+            await installCheckpointWorker(source);
+            await installCheckpointWorker(target);
+            await source.root.writeFile(proofPath, "left side wrote this before export\n");
+            await source.root.writeFile(notesPath, "workspace file synced by bundle\n");
+
+            const task = await source.startTask({kind: "js", cmd: workerPath});
+            const sourceState = await waitFor("source checkpoint", async () => {
+                return taskState(await source.root.bundleTaskStates(), task.id);
+            });
+
+            currentBundle = await source.root.exportPathBundle(workspacePath);
+            const restore = await target.root.importBundle(currentBundle, {replace: true});
+            const targetState = await waitFor("target checkpoint", async () => {
+                const state = taskState(await target.root.bundleTaskStates(), task.id);
+                return state && state.restored ? state : null;
+            });
+            const sourceProof = await source.root.readText(proofPath);
+            const targetProof = await target.root.readText(proofPath);
+            const sourceNotes = await source.root.readText(notesPath);
+            const targetNotes = await target.root.readText(notesPath);
+
+            const shells = {
+                source: await startShell(source, "source-terminal", "source"),
+                target: await startShell(target, "target-terminal", "target"),
+            };
+
+            const result = {
+                ok: sourceProof === targetProof &&
+                    sourceNotes === targetNotes &&
+                    sourceState.restored === false &&
+                    targetState.restored === true &&
+                    (restore.tasks || []).includes(task.id),
+                taskID: task.id,
+                shells,
+                archives: currentBundle.archives.map(archive => archive.id),
+                states: currentBundle.states.map(state => [state.kind || "", state.id, state.path || state.state_path || ""]),
+                sourceState,
+                targetState,
+                sourceProof,
+                targetProof,
+                sourceNotes,
+                targetNotes,
+            };
+            show(sourceOutput, [
+                `interactive rc shell`,
+                `checkpoint task: ${task.id}`,
+                `workspace files: proof.txt, notes/today.txt`,
+            ].join("\n"));
+            show(targetOutput, [
+                `interactive rc shell`,
+                `restored checkpoint task: ${task.id}`,
+                `workspace files: proof.txt, notes/today.txt`,
+            ].join("\n"));
+            show(output, [
+                result.ok ? "migration complete" : "migration incomplete",
+                "checkpoint bundle",
+                bundleSummary(currentBundle),
+            ].join("\n"));
+            document.body.dataset.result = JSON.stringify(result);
+            resyncButton.disabled = false;
+            downloadButton.disabled = false;
+            return result;
+        })().catch(error => {
+            const result = {
+                ok: false,
+                error: String(error && error.message || error),
+                stack: String(error && error.stack || ""),
+            };
+            show(output, `${result.error}\n\n${result.stack}`);
+            document.body.dataset.result = JSON.stringify(result);
+            return result;
+        });
+        window.wanixTwoShellDemoResync = resyncBundle;
+    </script>
+</body>
+</html>
