@@ -1,5 +1,7 @@
 export DOCKER_CMD 	?= $(shell command -v docker)
 
+V86_VM_SRCS := $(wildcard *.go) go.mod go.sum lib.js
+
 build: wasm bundle
 .PHONY: build
 
@@ -12,7 +14,7 @@ bundle: bundle/v86-vm.wasm bundle/v86.wasm
 
 v86.tgz: bundle	
 
-bundle/v86-vm.wasm: lib.js
+bundle/v86-vm.wasm: $(V86_VM_SRCS)
 	mkdir -p ./bundle
 	GOWORK=off GOOS=js GOARCH=wasm go build -o ./bundle/v86-vm.wasm .
 
