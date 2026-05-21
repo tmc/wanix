@@ -44,6 +44,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	case ".":
 		return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
+			fskit.Entry("chat", fs.ModeDir|0755),
 			fskit.Entry("download", 0777),
 			fskit.Entry("prompt", 0777),
 			fskit.Entry("status", 0444),
@@ -65,25 +66,41 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		return newDownloadFile(name), nil
 	case "prompt":
 		return newPromptFile(name), nil
+	case "chat":
+		return fskit.DirFile(fskit.Entry("chat", fs.ModeDir|0755),
+			fskit.Entry("input", 0222),
+			fskit.Entry("output", 0444),
+			fskit.Entry("status", 0444),
+		), nil
+	case "chat/input":
+		return newPromptFile(name), nil
+	case "chat/output":
+		return newPromptFile(name), nil
+	case "chat/status":
+		return statusFile(name), nil
 	case "status":
-		return &fskit.FuncFile{
-			Node: fskit.Entry("status", 0444),
-			ReadFunc: func(n *fskit.Node) error {
-				status, err := promptStatus()
-				if err != nil {
-					fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
-					return nil
-				}
-				data, err := json.MarshalIndent(status, "", "  ")
-				if err != nil {
-					return err
-				}
-				fskit.SetData(n, append(data, '\n'))
-				return nil
-			},
-		}, nil
+		return statusFile(name), nil
 	default:
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+}
+
+func statusFile(name string) fs.File {
+	return &fskit.FuncFile{
+		Node: fskit.Entry(path.Base(name), 0444),
+		ReadFunc: func(n *fskit.Node) error {
+			status, err := promptStatus()
+			if err != nil {
+				fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
+				return nil
+			}
+			data, err := json.MarshalIndent(status, "", "  ")
+			if err != nil {
+				return err
+			}
+			fskit.SetData(n, append(data, '\n'))
+			return nil
+		},
 	}
 }
 
@@ -91,6 +108,7 @@ type Status struct {
 	API          string `json:"api"`
 	Availability string `json:"availability"`
 	Error        string `json:"error,omitempty"`
+	FS           string `json:"fs"`
 	UserAgent    string `json:"user_agent"`
 	Chrome       string `json:"chrome,omitempty"`
 }
@@ -316,6 +334,7 @@ func promptAvailability() (string, error) {
 func promptStatus() (Status, error) {
 	status := Status{
 		API:       "missing",
+		FS:        "#web/llm",
 		UserAgent: js.Global().Get("navigator").Get("userAgent").String(),
 		Chrome:    chromeBrands(),
 	}

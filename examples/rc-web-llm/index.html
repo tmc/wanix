@@ -88,21 +88,23 @@
         </div>
         <pre id="details"></pre>
     </header>
-    <wanix-system wasm="../../dist/wanix.debug.wasm?web-llm=5" debug>
+    <wanix-system wasm="../../dist/wanix.debug.wasm?web-llm=6" debug>
         <wanix-bind dst="." src="#ramfs"></wanix-bind>
         <wanix-bind dst="task" src="#task"></wanix-bind>
         <wanix-bind dst="term" src="#term"></wanix-bind>
         <wanix-bind dst="web" src="#web"></wanix-bind>
+        <wanix-bind dst="llm" src="#web/llm"></wanix-bind>
 
         <wanix-bind type="file" dst="rc.wasm" src="../repl-rc/rc.wasm" mode="0755"></wanix-bind>
-        <wanix-bind type="file" dst="llm.rc" mode="0755">
+        <wanix-bind type="file" dst="start.rc" mode="0755">
             echo 'LanguageModel status is shown above the shell.'
             echo 'When availability is available, try:'
             echo '  echo ''your prompt'' > prompt.txt'
-            echo '  openfile web/llm/prompt < prompt.txt'
+            echo '  openfile llm/chat/output < prompt.txt'
+            echo '  cat llm/status'
         </wanix-bind>
 
-        <wanix-task id="shell" cmd="rc.wasm llm.rc" type="gojs" term start></wanix-task>
+        <wanix-task id="shell" cmd="rc.wasm start.rc" type="gojs" term start></wanix-task>
         <wanix-term id="shell-term" path="#term/pending"></wanix-term>
     </wanix-system>
     <script type="module">
@@ -124,7 +126,7 @@
 
         async function refreshStatus() {
             try {
-                const status = JSON.parse(await readText("web/llm/status"));
+                const status = JSON.parse(await readText("llm/status"));
                 availability.textContent = status.availability || "unknown";
                 api.textContent = status.api || "unknown";
                 details.textContent = JSON.stringify(status, null, 2);
@@ -145,7 +147,7 @@
         downloadButton.addEventListener("click", async () => {
             downloadButton.disabled = true;
             try {
-                download.textContent = await readText("web/llm/download");
+                download.textContent = await readText("llm/download");
             } catch (err) {
                 download.textContent = String(err);
             } finally {

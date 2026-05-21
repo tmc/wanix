@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8"/>
-    <script type="module" src="../dist/wanix.min.js"></script>
+    <script src="../dist/wanix.min.js" type="module"></script>
 </head>
 <body style="height: 100vh; margin: 0;">
     <wanix-system wasm="../dist/wanix.debug.wasm" debug>
@@ -17,17 +17,21 @@
 Write one sentence about filesystems as APIs.
         </wanix-bind>
         <wanix-bind type="file" dst="README" mode="0644">
-Browser Prompt API is mounted at llm and web/llm.
+Wanix LLM workbench
 
-Try:
+The browser Prompt API is mounted at llm and is also available at web/llm.
+
+Try these in the rc terminal:
 
   cat llm/status
+  cat llm/availability
   cat llm/download
   openfile llm/chat/output < prompt.txt
         </wanix-bind>
 
-        <wanix-task id="rc" cmd="rc.wasm" type="gojs" term start></wanix-task>
-        <wanix-term path="#task/rc/term"></wanix-term>
+        <wanix-workbench assets="/workbench" open="README prompt.txt" term>
+            <wanix-task role="shell" type="gojs" cmd="rc.wasm"></wanix-task>
+        </wanix-workbench>
     </wanix-system>
 </body>
 </html>

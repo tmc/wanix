@@ -6,6 +6,10 @@ Files:
 
 - `availability`: read-only. Returns `available`, `downloadable`,
   `downloading`, `unavailable`, or an error from `LanguageModel.availability`.
+- `chat/`: a small Plan 9-style service directory.
+  - `input`: write prompts here.
+  - `output`: write a prompt then read the response from the same open file.
+  - `status`: same JSON as `status`, useful when `chat` is bound elsewhere.
 - `download`: executable and read/write. Explicitly calls
   `LanguageModel.create()` when availability is `downloadable` or
   `downloading`, then destroys the session and reports the new availability.
@@ -23,10 +27,15 @@ returns an error line.
 `available`. `downloadable` and `downloading` fail closed; use `download` as the
 explicit model setup action.
 
-This is intentionally the smallest Wanix-facing surface. It does not preserve
-conversation sessions between opens, expose sampling options, stream tokens, or
-download the browser model on behalf of a foreground program. Those can be
-added as explicit files once the basic contract is useful.
+This is intentionally a small Wanix-facing surface. It does not preserve
+conversation sessions between opens, expose sampling options, or stream tokens.
+Those can be added as explicit files once the basic contract is useful.
+
+Bind it into a namespace like any other Wanix filesystem:
+
+```html
+<wanix-bind dst="llm" src="#web/llm"></wanix-bind>
+```
 
 From rc:
 
@@ -36,4 +45,5 @@ cat web/llm/status
 cat web/llm/download
 echo 'Write one sentence about filesystems as APIs.' > prompt.txt
 openfile web/llm/prompt < prompt.txt
+openfile llm/chat/output < prompt.txt
 ```
