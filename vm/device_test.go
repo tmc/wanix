@@ -102,6 +102,39 @@ func TestImportedVMSetGuestInitializesNamespace(t *testing.T) {
 	}
 }
 
+func TestVMGuestExportCreate(t *testing.T) {
+	root, device := newTestDevice(t)
+	vm, err := device.ImportManifest(migration.VMManifest{ID: "1", Kind: "v86"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	guest := memfs.New()
+	if err := fs.Mkdir(guest, "tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := vm.SetGuest(guest); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		err = fs.WriteFile(root.NS(), "#vm/1/guest/tmp/state.txt", []byte("migrated"), 0o644)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("write guest file: %v", err)
+	}
+	data, err := fs.ReadFile(root.NS(), "#vm/1/guest/tmp/state.txt")
+	if err != nil {
+		t.Fatalf("read guest file: %v", err)
+	}
+	if string(data) != "migrated" {
+		t.Fatalf("guest data = %q, want migrated", data)
+	}
+}
+
 func TestDeviceImportManifestRejectsInvalidInput(t *testing.T) {
 	_, device := newTestDevice(t)
 	if _, err := device.ImportManifest(migration.VMManifest{ID: "bad", Kind: "v86"}); !errors.Is(err, fs.ErrInvalid) {

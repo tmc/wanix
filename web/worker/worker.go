@@ -116,14 +116,22 @@ func (r *Resource) StartWithState(state []byte, args ...string) error {
 						log.Println("error resolving vm", vmID, err)
 						return
 					}
-					vms := rfsys.(*vm.Device)
-					vm, err := vms.Lookup(vmID)
-					if err != nil {
-						log.Println("error looking up vm", vmID, err)
-						return
+					vres, ok := rfsys.(*vm.VM)
+					if !ok {
+						vms, ok := rfsys.(*vm.Device)
+						if !ok {
+							log.Println("error resolving vm state", vmID, "not a vm device")
+							return
+						}
+						var err error
+						vres, err = vms.Lookup(vmID)
+						if err != nil {
+							log.Println("error looking up vm", vmID, err)
+							return
+						}
 					}
 					log.Println("mounting guest...")
-					if err := vm.SetGuest(metacache.New(exportFS)); err != nil {
+					if err := vres.SetGuest(metacache.New(exportFS)); err != nil {
 						log.Println("error setting guest", err)
 					}
 				}()

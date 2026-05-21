@@ -77,6 +77,17 @@ func (r *VM) Open(name string) (fs.File, error) {
 	return r.OpenContext(context.Background(), name)
 }
 
+func (r *VM) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {
+	r.mu.Lock()
+	if err := r.initVFSLocked(); err != nil {
+		r.mu.Unlock()
+		return nil, "", err
+	}
+	ns := r.vfs
+	r.mu.Unlock()
+	return ns.ResolveFS(ctx, name)
+}
+
 func (r *VM) baseFS() fs.FS {
 	return fskit.MapFS{
 		"ctl": misc.ControlFile(&cli.Command{

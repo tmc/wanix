@@ -165,8 +165,39 @@ func (d *Device) Open(name string) (fs.File, error) {
 	return d.OpenContext(context.Background(), name)
 }
 
-func (d *Device) OpenContext(ctx context.Context, name string) (fs.File, error) {
-	fsys := fskit.MapFS{
+func (d *Device) ResolveFS(ctx context.Context, name string) (fs.FS, string, error) {
+	base, rest, ok := strings.Cut(name, "/")
+	if !ok {
+		if _, exists := d.rootFS().(fskit.MapFS)[name]; exists {
+			return d, name, nil
+		}
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if r, exists := d.resources[name]; exists {
+			return r, ".", nil
+		}
+		if r, exists := d.aliases[name]; exists {
+			return r, ".", nil
+		}
+		return d, name, nil
+	}
+	if base == "new" {
+		return d, name, nil
+	}
+	d.mu.Lock()
+	r, exists := d.resources[base]
+	if !exists {
+		r, exists = d.aliases[base]
+	}
+	d.mu.Unlock()
+	if !exists {
+		return d, name, nil
+	}
+	return fs.Resolve(r, ctx, rest)
+}
+
+func (d *Device) rootFS() fs.FS {
+	return fskit.MapFS{
 		"new": fskit.OpenFunc(func(ctx context.Context, name string) (fs.File, error) {
 			if name == "." {
 				var nodes []fs.DirEntry
@@ -188,5 +219,8 @@ func (d *Device) OpenContext(ctx context.Context, name string) (fs.File, error) 
 			}, nil
 		}),
 	}
-	return fs.OpenContext(ctx, fskit.UnionFS{fsys, fskit.MapFS(d.resources), fskit.MapFS(d.aliases)}, name)
+}
+
+func (d *Device) OpenContext(ctx context.Context, name string) (fs.File, error) {
+	return fs.OpenContext(ctx, fskit.UnionFS{d.rootFS(), fskit.MapFS(d.resources), fskit.MapFS(d.aliases)}, name)
 }
