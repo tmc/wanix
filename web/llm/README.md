@@ -1,112 +1,140 @@
 # web/llm
 
-`web/llm` exposes the browser Prompt API under `#web/llm`.
+`web/llm` exposes the browser Prompt API as a Wanix file service under
+`#web/llm`.
 
-Files:
-
-- `availability`: read-only. Returns `available`, `downloadable`,
-  `downloading`, `unavailable`, or an error from `LanguageModel.availability`.
-- `chat/`: a small Plan 9-style service directory.
-  - `input`: write prompts here.
-  - `output`: write a prompt then read the response from the same open file.
-  - `status`: same JSON as `status`, useful when `chat` is bound elsewhere.
-- `ctl`: write-only control file. Write `download` to call
-  `LanguageModel.create()` when availability is `downloadable` or
-  `downloading`, monitor browser download progress in the background, then
-  destroy the session.
-- `new`: read-only allocator. Each read returns a new session id.
-- `prompt`: executable and read/write. Write one newline-terminated prompt and
-  read the response from the same open file. When the browser supports
-  `promptStreaming`, reads return chunks as they arrive.
-- `status`: read-only JSON with API presence, availability, download state,
-  user agent, and last availability error when available.
-- `<id>/`: a session directory allocated by `new`.
-  - `system`: read/write system prompt used when creating browser sessions.
-  - `prompt`: write prompts here.
-  - `output`: read streamed response bytes.
-  - `prefill`: read/write assistant response prefix. The next prompt sends it
-    as a trailing assistant message with `prefix: true`.
-  - `schema`: read/write JSON Schema passed as `responseConstraint`.
-  - `history`: read/write JSON prompt history used for restore.
-  - `clone`: read to allocate a copy of this session's prompts and history.
-  - `ctl`: write `stop`, `continue`, or `close`.
-  - `status`: read session state, including context usage when the browser
-    exposes it.
-
-The implementation uses `globalThis.LanguageModel.availability()`,
-`LanguageModel.create()`, `session.promptStreaming()`, and `session.prompt()`.
-If the browser does not provide `LanguageModel`, `availability` reports
-`unavailable` and `prompt` returns an error line.
-
-`prompt` calls `LanguageModel.create()` only when availability is exactly
-`available`. `downloadable` and `downloading` fail closed; write `download` to
-`ctl` as the explicit model setup action.
-
-Allocated sessions keep a live browser `LanguageModel` session across prompts
-until `ctl close`. Long-term state is also represented as stored user and
-assistant turns in `history`, so a session can be restored with
-`initialPrompts` when a live browser session must be recreated. Browser-native
-opaque session persistence across page reloads is not exposed.
-
-Bind it into a namespace like any other Wanix filesystem:
+It follows the usual Wanix shape: control files start and stop work, status
+files report state, and stream files carry prompt and response bytes.
 
 ```html
 <wanix-bind dst="llm" src="#web/llm"></wanix-bind>
 ```
 
-## rc examples
+## Files
 
-The one-shot files are useful when you do not need conversation state. They
-create a browser session for the prompt and close it after the response:
+Top-level files:
+
+- `availability`: read-only. Prints `available`, `downloadable`,
+  `downloading`, `unavailable`, or an availability error.
+- `status`: read-only JSON with API presence, availability, download state,
+  user agent, Chrome brands when available, and the last availability error.
+- `ctl`: write-only global control file.
+  - `download`: ask Chrome to create a session with a download monitor.
+  - `start`: synonym for `download`.
+- `new`: read-only session allocator. Each read creates a session and prints
+  its id.
+- `prompt`: one-shot prompt file. Write a prompt and read the response from
+  the same open file.
+- `chat/`: compatibility service directory.
+  - `input`: prompt input.
+  - `output`: one-shot prompt/response stream, same behavior as `prompt`.
+  - `status`: same JSON as top-level `status`.
+
+Session files under `<id>/`:
+
+- `system`: read/write system prompt. Changing it resets the live browser
+  session for that Wanix session.
+- `prompt`: write-only prompt input.
+- `output`: read-only response stream for the most recent prompt.
+- `prefill`: read/write assistant response prefix. The next prompt sends it as
+  a trailing assistant message with `prefix: true`.
+- `schema`: read/write JSON Schema passed as `responseConstraint`.
+- `history`: read/write JSON prompt history. Writing replaces the history and
+  resets the live browser session.
+- `clone`: read-only allocator that copies the session and prints the new id.
+- `ctl`: write-only session control file.
+  - `stop`: abort the current prompt.
+  - `continue`: prompt with `Continue.` in the current session.
+  - `close`: abort work, destroy the browser session, close output, and remove
+    the Wanix session.
+- `status`: read-only JSON with session state, turn count, live-session
+  presence, configured option files, and context usage when Chrome exposes it.
+
+## Usage
+
+Check availability and start model setup:
 
 ```sh
-cat web/llm/availability
-cat web/llm/status
-echo download > web/llm/ctl
-echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
-openfile web/llm/prompt < prompt.txt
-openfile llm/chat/output < prompt.txt
+cat llm/availability
+cat llm/status
+echo download > llm/ctl
 ```
 
-Use allocated session directories when you want system prompts, continuation,
-history, cloning, structured output, or stop/close controls. `new` prints the
-session id it allocated. The example below assumes a fresh page where the first
-two reads return `1` and `2`; if you have already created sessions, use the ids
-printed by `cat llm/new`.
+Run a one-shot prompt:
 
 ```sh
-# On a fresh page, these reads return 1 and 2.
+echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
+openfile llm/prompt < prompt.txt
+```
+
+One-shot prompts create a browser session for the request and close it after
+the response.
+
+## Sessions
+
+Use allocated sessions when you want system prompts, conversation continuation,
+history, cloning, structured output, or stop/close controls.
+
+On a fresh page, the first two reads of `new` return `1` and `2`. If sessions
+already exist, use the ids printed by `new`.
+
+```sh
 cat llm/new
 cat llm/new
+
 echo 'You are a terse Go systems programmer.' > llm/1/system
 echo 'You are a lyrical Plan 9 guide.' > llm/2/system
+
 cat > prompt-go.txt <<'EOF'
 Explain why Go code often favors small interfaces.
 EOF
 cat prompt-go.txt > llm/1/prompt
 cat llm/1/output
+
 cat > prompt-plan9.txt <<'EOF'
 Describe namespaces as if introducing Plan 9 to a shell user.
 EOF
 cat prompt-plan9.txt > llm/2/prompt
 cat llm/2/output
+
 cat > prompt-followup.txt <<'EOF'
 Continue with one concrete example.
 EOF
 cat prompt-followup.txt > llm/1/prompt
 cat llm/1/output
+
 echo continue > llm/2/ctl
 cat llm/2/output
+
 cat llm/1/history
+cat llm/1/status
 cat llm/1/clone
+
 echo close > llm/1/ctl
 echo close > llm/2/ctl
 ```
 
-`llm/<id>/prompt` is write-only. Do not use `openfile llm/<id>/prompt <
-prompt.txt`; write the prompt, then read `llm/<id>/output`.
+Allocated sessions keep a live browser `LanguageModel` session across prompts
+until `ctl close`. They also record user and assistant turns in `history`; if a
+browser session must be recreated, the recorded turns are supplied as
+`initialPrompts`.
 
-Structured output is a session option:
+`<id>/prompt` is write-only. Do not use:
+
+```sh
+openfile llm/1/prompt < prompt.txt
+```
+
+Use:
+
+```sh
+cat prompt.txt > llm/1/prompt
+cat llm/1/output
+```
+
+## Structured Output
+
+Write a JSON Schema to `<id>/schema` to pass it as `responseConstraint`:
 
 ```sh
 cat llm/new
@@ -118,39 +146,19 @@ cat llm/3/output
 echo close > llm/3/ctl
 ```
 
-## Streaming design
+## Notes
 
-The native streaming primitive in Wanix is a pipe. `fs/pipe` exposes two stream
-files, `data` and `data1`, backed by connected ports. Reads block until bytes
-arrive when the pipe is created in blocking mode. That matches browser
-`promptStreaming`: the model writes chunks, and the consumer reads bytes until
-EOF.
+The implementation uses `globalThis.LanguageModel.availability`,
+`LanguageModel.create`, `session.promptStreaming`, and `session.prompt`.
 
-The Plan 9 plumber is a message router, not the byte stream itself. Plumbing
-rules decide where a prompt or selection should go. The response should then be
-read from a stream file, such as a pipe-backed `out`, rather than from a control
-file or a file whose read operation starts work.
+Prompts run only when availability is exactly `available`. `downloadable` and
+`downloading` fail closed; write `download` to `ctl` as the explicit setup
+action.
 
-The LLM filesystem separates commands, status, and streams:
+Browser-native opaque session persistence across page reloads is not exposed.
+Wanix records explicit prompt history only while the page is alive unless a
+caller saves and restores `<id>/history`.
 
-```text
-llm/
-  new          read allocates a session id
-  ctl          global commands, such as download
-  status       global status
-  <id>/
-    system     read/write system prompt
-    prefill    read/write assistant prefix for the next response
-    schema     read/write JSON Schema response constraint
-    history    read/write JSON prompt history
-    clone      read to allocate a forked session
-    ctl        session commands: stop, continue, close
-    prompt     write prompt text
-    output     read streamed response bytes
-    status     session status
-```
-
-`prompt` and `chat/output` are convenience files for the common one-shot case.
-They should behave as stream files: writing a prompt starts work, and reads
-return response chunks as the browser produces them. Control operations remain
-writes to `ctl`, and status remains reads from `status`.
+Chrome may evict old context internally when the context window overflows.
+`<id>/status` reports context fields when available, but does not prevent
+overflow.
