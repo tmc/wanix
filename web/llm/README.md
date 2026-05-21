@@ -10,26 +10,34 @@ Files:
   - `input`: write prompts here.
   - `output`: write a prompt then read the response from the same open file.
   - `status`: same JSON as `status`, useful when `chat` is bound elsewhere.
-- `download`: executable and read/write. Explicitly calls
+- `ctl`: write-only control file. Write `download` to call
   `LanguageModel.create()` when availability is `downloadable` or
-  `downloading`, then destroys the session and reports the new availability.
+  `downloading`, monitor browser download progress in the background, then
+  destroy the session.
+- `new`: read-only allocator. Each read returns a new session id.
 - `prompt`: executable and read/write. Write one newline-terminated prompt and
-  read one newline-terminated response from the same open file.
-- `status`: read-only JSON with API presence, availability, user agent, and
-  last availability error when available.
+  read the response from the same open file. When the browser supports
+  `promptStreaming`, reads return chunks as they arrive.
+- `status`: read-only JSON with API presence, availability, download state,
+  user agent, and last availability error when available.
+- `<id>/`: a session directory allocated by `new`.
+  - `prompt`: write prompts here.
+  - `output`: read streamed response bytes.
+  - `ctl`: write `close` to remove the session.
+  - `status`: read session state.
 
 The implementation uses `globalThis.LanguageModel.availability()`,
-`LanguageModel.create()`, and `session.prompt()`. If the browser does not
-provide `LanguageModel`, `availability` reports `unavailable` and `prompt`
-returns an error line.
+`LanguageModel.create()`, `session.promptStreaming()`, and `session.prompt()`.
+If the browser does not provide `LanguageModel`, `availability` reports
+`unavailable` and `prompt` returns an error line.
 
 `prompt` calls `LanguageModel.create()` only when availability is exactly
-`available`. `downloadable` and `downloading` fail closed; use `download` as the
-explicit model setup action.
+`available`. `downloadable` and `downloading` fail closed; write `download` to
+`ctl` as the explicit model setup action.
 
 This is intentionally a small Wanix-facing surface. It does not preserve
-conversation sessions between opens, expose sampling options, or stream tokens.
-Those can be added as explicit files once the basic contract is useful.
+conversation sessions between opens or expose sampling options. Those can be
+added as explicit files once the basic contract is useful.
 
 Bind it into a namespace like any other Wanix filesystem:
 
@@ -42,8 +50,44 @@ From rc:
 ```sh
 cat web/llm/availability
 cat web/llm/status
-cat web/llm/download
-echo 'Write one sentence about filesystems as APIs.' > prompt.txt
+echo download > web/llm/ctl
+echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > prompt.txt
 openfile web/llm/prompt < prompt.txt
 openfile llm/chat/output < prompt.txt
+cat llm/new
+echo 'Write one sentence about how Go and Plan 9 share a philosophy.' > llm/1/prompt
+cat llm/1/output
+echo close > llm/1/ctl
 ```
+
+## Streaming design
+
+The native streaming primitive in Wanix is a pipe. `fs/pipe` exposes two stream
+files, `data` and `data1`, backed by connected ports. Reads block until bytes
+arrive when the pipe is created in blocking mode. That matches browser
+`promptStreaming`: the model writes chunks, and the consumer reads bytes until
+EOF.
+
+The Plan 9 plumber is a message router, not the byte stream itself. Plumbing
+rules decide where a prompt or selection should go. The response should then be
+read from a stream file, such as a pipe-backed `out`, rather than from a control
+file or a file whose read operation starts work.
+
+The LLM filesystem separates commands, status, and streams:
+
+```text
+llm/
+  new          read allocates a session id
+  ctl          global commands, such as download
+  status       global status
+  <id>/
+    ctl        session commands: stop, reset, close
+    prompt     write prompt text
+    output     read streamed response bytes
+    status     session status
+```
+
+`prompt` and `chat/output` are convenience files for the common one-shot case.
+They should behave as stream files: writing a prompt starts work, and reads
+return response chunks as the browser produces them. Control operations remain
+writes to `ctl`, and status remains reads from `status`.
