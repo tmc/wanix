@@ -88,6 +88,7 @@ func cleanTarPath(name string) (string, error) {
 		return "", &fs.PathError{Op: "import", Path: name, Err: fs.ErrInvalid}
 	}
 	name = strings.ReplaceAll(name, "\\", "/")
+	name = strings.TrimPrefix(name, "./")
 	if strings.HasPrefix(name, "/") {
 		return "", &fs.PathError{Op: "import", Path: name, Err: fs.ErrInvalid}
 	}
@@ -161,13 +162,15 @@ func importRegular(fsys fs.FS, name string, hdr *tar.Header, r io.Reader) (int64
 
 func importSymlink(fsys fs.FS, name string, hdr *tar.Header) error {
 	target := strings.ReplaceAll(strings.TrimSpace(hdr.Linkname), "\\", "/")
-	if target == "" || path.IsAbs(target) {
+	if target == "" {
 		return &fs.PathError{Op: "import", Path: hdr.Name, Err: fs.ErrInvalid}
 	}
-	for _, elem := range strings.Split(target, "/") {
-		if elem == ".." {
-			return &fs.PathError{Op: "import", Path: hdr.Name, Err: fs.ErrInvalid}
-		}
+	resolved := path.Clean(path.Join(path.Dir(name), target))
+	if path.IsAbs(target) {
+		resolved = path.Clean(strings.TrimPrefix(target, "/"))
+	}
+	if resolved == "." || strings.HasPrefix(resolved, "../") {
+		return &fs.PathError{Op: "import", Path: hdr.Name, Err: fs.ErrInvalid}
 	}
 	if err := mkdirAll(fsys, path.Dir(name), 0o755); err != nil {
 		return err

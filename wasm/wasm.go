@@ -179,18 +179,11 @@ func main() {
 						log.Println("error fetching archive", err)
 						return
 					}
-					archiveFS, err := tarfs.From(tar.NewReader(jsutil.NewReadableStream(v)))
-					if err != nil {
-						log.Println("error creating archive filesystem", err)
-						return
-					}
 					rwfs := memfs.New()
-					// t := time.Now()
-					if err := fs.CopyFS(archiveFS, ".", rwfs, "."); err != nil {
-						log.Println("error copying archive to memory filesystem", err)
+					if _, err := tarfs.Import(rwfs, tar.NewReader(jsutil.NewReadableStream(v))); err != nil {
+						log.Println("error importing archive to memory filesystem", err)
 						return
 					}
-					// log.Println("copied archive to memory filesystem in", time.Since(t))
 					if err := task.NS().Bind(rwfs, ".", dst); err != nil {
 						log.Println("error binding archive", err)
 						return

@@ -53,6 +53,74 @@ func TestImportPathMaterializesArchive(t *testing.T) {
 	}
 }
 
+func TestImportAcceptsInternalParentSymlinkTarget(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "usr/lib/os-release", Mode: 0o644, Size: 6}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(tw, "wanix\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "etc/os-release",
+		Linkname: "../usr/lib/os-release",
+		Typeflag: tar.TypeSymlink,
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := memfs.New()
+	if _, err := Import(dst, tar.NewReader(&buf)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := fs.Readlink(dst, "etc/os-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "../usr/lib/os-release" {
+		t.Fatalf("etc/os-release link = %q, want ../usr/lib/os-release", target)
+	}
+}
+
+func TestImportAcceptsAbsoluteInternalSymlinkTarget(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "etc/ssl/cert.pem", Mode: 0o644, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(tw, "cert\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     "etc/ssl1.1/cert.pem",
+		Linkname: "/etc/ssl/cert.pem",
+		Typeflag: tar.TypeSymlink,
+		Mode:     0o777,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := memfs.New()
+	if _, err := Import(dst, tar.NewReader(&buf)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := fs.Readlink(dst, "etc/ssl1.1/cert.pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "/etc/ssl/cert.pem" {
+		t.Fatalf("etc/ssl1.1/cert.pem link = %q, want /etc/ssl/cert.pem", target)
+	}
+}
+
 func TestImportRejectsUnsafePaths(t *testing.T) {
 	tests := []struct {
 		name string
@@ -60,7 +128,7 @@ func TestImportRejectsUnsafePaths(t *testing.T) {
 	}{
 		{"parent", "../evil.txt"},
 		{"nested parent", "dir/../evil.txt"},
-		{"absolute", "/evil.txt"},
+		{"absolute path", "/evil.txt"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -89,6 +157,35 @@ func TestImportRejectsUnsafePaths(t *testing.T) {
 				t.Fatalf("evil.txt stat error = %v, want not exist", err)
 			}
 		})
+	}
+}
+
+func TestImportAcceptsDotSlashPaths(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "./", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "./etc/os-release", Mode: 0o644, Size: 6}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(tw, "wanix\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := memfs.New()
+	if _, err := Import(dst, tar.NewReader(&buf)); err != nil {
+		t.Fatal(err)
+	}
+	data, err := fs.ReadFile(dst, "etc/os-release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "wanix\n" {
+		t.Fatalf("etc/os-release = %q, want wanix", data)
 	}
 }
 

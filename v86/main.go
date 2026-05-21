@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall/js"
+	"time"
 
 	_ "embed"
 
@@ -253,14 +254,13 @@ func main() {
 		log.Fatalf("failed to import lib.js: %v", err)
 	}
 
-	wasmBlob := js.Global().Get("Blob").New([]any{v86wasm}, map[string]any{"type": "application/wasm"})
-	wasmURL := js.Global().Get("URL").Call("createObjectURL", wasmBlob)
-
 	bufObj := func(buf js.Value) map[string]any {
 		return map[string]any{
 			"buffer": buf.Call("slice").Get("buffer"),
 		}
 	}
+	wasmBlob := js.Global().Get("Blob").New([]any{v86wasm}, map[string]any{"type": "application/wasm"})
+	wasmURL := js.Global().Get("URL").Call("createObjectURL", wasmBlob)
 
 	// 9P handler for the v86 emulator. v86's handle9p adapter dispatches
 	// requests concurrently and correlates replies by 9P tag (see Wc in
@@ -547,5 +547,7 @@ func main() {
 		return nil
 	}))
 
-	select {}
+	for {
+		time.Sleep(time.Hour)
+	}
 }
