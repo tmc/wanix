@@ -84,7 +84,7 @@
         <div class="grid">
             <div class="panel"><b>Availability</b><span id="availability">pending</span></div>
             <div class="panel"><b>API</b><span id="api">pending</span></div>
-            <div class="panel"><b>Download</b><button id="download-button" type="button">Run setup</button> <span id="download">not started</span></div>
+            <div class="panel"><b>Download</b><button id="download-button" type="button">Start download</button> <span id="download">not started</span></div>
         </div>
         <pre id="details"></pre>
     </header>
@@ -100,7 +100,10 @@
             echo 'LanguageModel status is shown above the shell.'
             echo 'When availability is available, try:'
             echo '  echo ''your prompt'' > prompt.txt'
-            echo '  openfile llm/chat/output < prompt.txt'
+            echo '  cat llm/new'
+            echo '  cat prompt.txt > llm/1/prompt'
+            echo '  cat llm/1/output'
+            echo '  echo close > llm/1/ctl'
             echo '  cat llm/status'
         </wanix-bind>
 
@@ -147,7 +150,8 @@
         downloadButton.addEventListener("click", async () => {
             downloadButton.disabled = true;
             try {
-                download.textContent = await readText("llm/download");
+                await system.root.writeFile("llm/ctl", "download\n");
+                download.textContent = "started";
             } catch (err) {
                 download.textContent = String(err);
             } finally {

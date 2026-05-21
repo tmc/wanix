@@ -14,7 +14,7 @@
 
         <wanix-bind type="file" dst="rc.wasm" src="./repl-rc/rc.wasm"></wanix-bind>
         <wanix-bind type="file" dst="prompt.txt" mode="0644">
-Write one sentence about filesystems as APIs.
+Write one sentence about how Go and Plan 9 share a philosophy.
         </wanix-bind>
         <wanix-bind type="file" dst="README" mode="0644">
 Wanix LLM workbench
@@ -25,8 +25,11 @@ Try these in the rc terminal:
 
   cat llm/status
   cat llm/availability
-  cat llm/download
-  openfile llm/chat/output < prompt.txt
+  echo download > llm/ctl
+  cat llm/new
+  cat prompt.txt > llm/1/prompt
+  cat llm/1/output
+  echo close > llm/1/ctl
         </wanix-bind>
 
         <wanix-workbench assets="/workbench" open="README prompt.txt" term>
