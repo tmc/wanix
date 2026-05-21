@@ -27,6 +27,7 @@ import (
 	"tractor.dev/wanix/term"
 	"tractor.dev/wanix/vm"
 	"tractor.dev/wanix/web"
+	"tractor.dev/wanix/web/hostfs"
 	"tractor.dev/wanix/web/jsfs"
 	"tractor.dev/wanix/web/sys"
 	"tractor.dev/wanix/web/worker"
@@ -50,6 +51,8 @@ func main() {
 		{"#pipe", &pipe.Allocator{}},
 		{"#signal", &signal.Allocator{}},
 		{"#ramfs", &memfs.Allocator{}},
+		{"#macos", hostfs.NewGlobal("__wanixMacOSFS")},
+		{"#host", hostfs.NewGlobal("__wanixHostFS")},
 		{"#js", jsfs.NewFS(js.Global())},
 	}
 	for _, b := range sysbindings {
@@ -232,7 +235,9 @@ func main() {
 				case typ == "ns":
 					// jsutil.Log("binding ns", src, dst, task.ID())
 					if err := task.Bind(src, dst); err != nil {
-						log.Fatal(err)
+						log.Println("error binding namespace", src, dst, err)
+						reject.Invoke(err.Error())
+						return
 					}
 				case typ == "import":
 					t := time.Now()

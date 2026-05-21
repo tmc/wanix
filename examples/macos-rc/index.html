@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Wanix macOS rc</title>
+    <script type="module" src="../../dist/wanix.min.js"></script>
+    <style>
+        html, body, wanix-system {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            background: #101010;
+        }
+        wanix-system, wanix-term {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <wanix-system wasm="../../dist/wanix.debug.wasm" debug>
+        <wanix-bind dst="task" src="#task"></wanix-bind>
+        <wanix-bind dst="term" src="#term"></wanix-bind>
+        <wanix-bind dst="web" src="#web"></wanix-bind>
+        <wanix-bind dst="js" src="#js"></wanix-bind>
+        <wanix-bind dst="tmp" src="#ramfs"></wanix-bind>
+        <wanix-bind dst="mnt/macos" src="#macos"></wanix-bind>
+
+        <wanix-bind type="fetch" dst="rc.wasm" src="./rc.wasm"></wanix-bind>
+        <wanix-task id="rc" cmd="rc.wasm" type="gojs" wd="web" term start></wanix-task>
+        <wanix-term path="#task/rc/term"></wanix-term>
+    </wanix-system>
+</body>
+</html>
