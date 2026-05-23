@@ -98,6 +98,7 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 	case ".":
 		return fskit.DirFile(fskit.Entry(".", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
+			fskit.Entry("clone", 0444),
 			fskit.Entry("ctl", 0222),
 			fskit.Entry("new", 0444),
 			fskit.Entry("status", 0444),
@@ -118,6 +119,8 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		}, nil
 	case "ctl":
 		return newCtlFile(name), nil
+	case "clone":
+		return newSessionFile(name), nil
 	case "new":
 		return newSessionFile(name), nil
 	case "chat":

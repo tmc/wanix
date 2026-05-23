@@ -22,8 +22,9 @@ Top-level files:
 - `ctl`: write-only global control file.
   - `download`: ask Chrome to create a session with a download monitor.
   - `start`: synonym for `download`.
-- `new`: read-only session allocator. Each read creates a session and prints
+- `clone`: read-only session allocator. Each read creates a session and prints
   its id.
+- `new`: alias for `clone`.
 
 Prompts run through allocated sessions. Open `<id>/prompt`, write a prompt,
 and read the response from the same file. `<id>/output` also exposes the most
@@ -73,12 +74,12 @@ cat llm/system
 Use allocated sessions when you want system prompts, conversation continuation,
 history, cloning, structured output, or stop/close controls.
 
-On a fresh page, the first two reads of `new` return `1` and `2`. If sessions
-already exist, use the ids printed by `new`.
+On a fresh page, the first two reads of `clone` return `1` and `2`. If sessions
+already exist, use the ids printed by `clone`.
 
 ```sh
-cat llm/new
-cat llm/new
+cat llm/clone
+cat llm/clone
 
 echo 'You are a terse Go systems programmer.' > llm/1/system
 echo 'You are a lyrical Plan 9 guide.' > llm/2/system
@@ -125,7 +126,7 @@ cat llm/1/output
 Write a JSON Schema to `<id>/schema` to pass it as `responseConstraint`:
 
 ```sh
-cat llm/new
+cat llm/clone
 echo '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}' > llm/3/schema
 echo 'Return a JSON object whose answer says ok.' > llm/3/prompt
 cat llm/3/output

@@ -209,8 +209,8 @@ Start:
 
 Live conversations after a fresh page load:
 
-  cat llm/new
-  cat llm/new
+  cat llm/clone
+  cat llm/clone
   echo 'You are a terse Go systems programmer.' > llm/1/system
   echo 'You are a lyrical Plan 9 guide.' > llm/2/system
   openfile llm/1/prompt < prompt-go.txt
@@ -260,8 +260,8 @@ echo download &gt; llm/ctl
 echo 'Answer in at most two short sentences.' &gt; llm/system
 
 # live sessions
-cat llm/new
-cat llm/new
+cat llm/clone
+cat llm/clone
 echo 'You are a terse Go systems programmer.' &gt; llm/1/system
 echo 'You are a lyrical Plan 9 guide.' &gt; llm/2/system
 openfile llm/1/prompt &lt; prompt-go.txt

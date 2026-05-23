@@ -14,10 +14,12 @@ func TestSourceExposesBindableChatFiles(t *testing.T) {
 	src := string(data)
 	for _, want := range []string{
 		`fskit.Entry("chat", fs.ModeDir|0755)`,
+		`fskit.Entry("clone", 0444)`,
 		`fskit.Entry("ctl", 0222)`,
 		`fskit.Entry("new", 0444)`,
 		`fskit.Entry("system", 0666)`,
 		`case "ctl":`,
+		`case "clone":`,
 		`case "new":`,
 		`func (fsys *FS) WriteFile(name string, data []byte, perm fs.FileMode) error`,
 		`func (fsys *FS) OpenFile(name string, flag int, perm fs.FileMode)`,
