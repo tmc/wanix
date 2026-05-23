@@ -204,7 +204,8 @@ Browser Prompt API is mounted at llm and web/llm.
 Start:
 
   cat llm/status
-  echo download > llm/ctl
+  cat llm/model/availability
+  echo download > llm/model/ctl
   echo 'Answer in at most two short sentences.' > llm/system
 
 Live conversations after a fresh page load:
@@ -256,7 +257,8 @@ Live conversations after a fresh page load:
                 <h2>Try in rc</h2>
                 <pre># setup
 cat llm/status
-echo download &gt; llm/ctl
+cat llm/model/availability
+echo download &gt; llm/model/ctl
 echo 'Answer in at most two short sentences.' &gt; llm/system
 
 # live sessions

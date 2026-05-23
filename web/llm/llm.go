@@ -100,29 +100,31 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 			fskit.Entry("availability", 0444),
 			fskit.Entry("clone", 0444),
 			fskit.Entry("ctl", 0222),
+			fskit.Entry("model", fs.ModeDir|0755),
 			fskit.Entry("new", 0444),
 			fskit.Entry("status", 0444),
 			fskit.Entry("system", 0666),
 		), nil
 	case "availability":
-		return &fskit.FuncFile{
-			Node: fskit.Entry("availability", 0444),
-			ReadFunc: func(n *fskit.Node) error {
-				availability, err := promptAvailability()
-				if err != nil {
-					fskit.SetData(n, []byte("error: "+err.Error()+"\n"))
-					return nil
-				}
-				fskit.SetData(n, []byte(availability+"\n"))
-				return nil
-			},
-		}, nil
+		return availabilityFile(name), nil
 	case "ctl":
 		return newCtlFile(name), nil
 	case "clone":
 		return newSessionFile(name), nil
 	case "new":
 		return newSessionFile(name), nil
+	case "model":
+		return fskit.DirFile(fskit.Entry("model", fs.ModeDir|0755),
+			fskit.Entry("availability", 0444),
+			fskit.Entry("ctl", 0222),
+			fskit.Entry("status", 0444),
+		), nil
+	case "model/availability":
+		return availabilityFile(name), nil
+	case "model/ctl":
+		return newCtlFile(name), nil
+	case "model/status":
+		return statusFile(name), nil
 	case "chat":
 		return fskit.DirFile(fskit.Entry("chat", fs.ModeDir|0755),
 			fskit.Entry("input", 0222),
@@ -158,6 +160,21 @@ func statusFile(name string) fs.File {
 				return err
 			}
 			fskit.SetData(n, append(data, '\n'))
+			return nil
+		},
+	}
+}
+
+func availabilityFile(name string) fs.File {
+	return &fskit.FuncFile{
+		Node: fskit.Entry(path.Base(name), 0444),
+		ReadFunc: func(n *fskit.Node) error {
+			availability, err := promptAvailability()
+			if err != nil {
+				fskit.SetData(n, []byte("error: "+err.Error()+"\n"))
+				return nil
+			}
+			fskit.SetData(n, []byte(availability+"\n"))
 			return nil
 		},
 	}

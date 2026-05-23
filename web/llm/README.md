@@ -22,6 +22,10 @@ Top-level files:
 - `ctl`: write-only global control file.
   - `download`: ask Chrome to create a session with a download monitor.
   - `start`: synonym for `download`.
+- `model/`: model availability and setup controls.
+  - `availability`: same value as top-level `availability`.
+  - `ctl`: write `download` to start model setup.
+  - `status`: same JSON as top-level `status`.
 - `clone`: read-only session allocator. Each read creates a session and prints
   its id.
 - `new`: alias for `clone`.
@@ -60,8 +64,9 @@ Check availability and start model setup:
 
 ```sh
 cat llm/availability
+cat llm/model/availability
 cat llm/status
-echo download > llm/ctl
+echo download > llm/model/ctl
 ```
 
 Set an overall system prompt:
