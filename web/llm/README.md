@@ -25,6 +25,7 @@ Top-level files:
 - `model/`: model availability and setup controls.
   - `availability`: same value as top-level `availability`.
   - `ctl`: write `download` to start model setup.
+  - `params`: read-only JSON from `LanguageModel.params()` when Chrome exposes it.
   - `status`: same JSON as top-level `status`.
 - `clone`: read-only session allocator. Each read creates a session and prints
   its id.

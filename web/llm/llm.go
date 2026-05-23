@@ -117,12 +117,15 @@ func (fsys *FS) OpenContext(ctx context.Context, name string) (fs.File, error) {
 		return fskit.DirFile(fskit.Entry("model", fs.ModeDir|0755),
 			fskit.Entry("availability", 0444),
 			fskit.Entry("ctl", 0222),
+			fskit.Entry("params", 0444),
 			fskit.Entry("status", 0444),
 		), nil
 	case "model/availability":
 		return availabilityFile(name), nil
 	case "model/ctl":
 		return newCtlFile(name), nil
+	case "model/params":
+		return paramsFile(name), nil
 	case "model/status":
 		return statusFile(name), nil
 	case "chat":
@@ -175,6 +178,36 @@ func availabilityFile(name string) fs.File {
 				return nil
 			}
 			fskit.SetData(n, []byte(availability+"\n"))
+			return nil
+		},
+	}
+}
+
+func paramsFile(name string) fs.File {
+	return &fskit.FuncFile{
+		Node: fskit.Entry(path.Base(name), 0444),
+		ReadFunc: func(n *fskit.Node) error {
+			api, err := promptAPI()
+			if err != nil {
+				fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
+				return nil
+			}
+			params := api.Get("params")
+			if params.IsUndefined() || params.IsNull() {
+				fskit.SetData(n, []byte("{}\n"))
+				return nil
+			}
+			value, err := awaitErr(api.Call("params"), 10*time.Second)
+			if err != nil {
+				fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
+				return nil
+			}
+			data, err := jsonStringify(value)
+			if err != nil {
+				fskit.SetData(n, []byte(`{"error":`+quoteJSON(err.Error())+"}\n"))
+				return nil
+			}
+			fskit.SetData(n, []byte(data+"\n"))
 			return nil
 		},
 	}
