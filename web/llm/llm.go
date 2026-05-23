@@ -625,6 +625,10 @@ func openSessionPath(name string) (fs.File, error) {
 		return sessionCloneFile(s), nil
 	case "context":
 		return &sessionContextFile{name: path.Base(elem), session: s}, nil
+	case "ctx":
+		return sessionContextDir(), nil
+	case "ctx/window", "ctx/usage", "ctx/left":
+		return sessionContextMetricFile(s, path.Base(elem)), nil
 	case "ctl":
 		return &sessionCtlFile{name: path.Base(elem), session: s}, nil
 	case "history":
@@ -651,6 +655,7 @@ func sessionDir(*session) fs.File {
 		fskit.Entry("clone", 0444),
 		fskit.Entry("context", 0444),
 		fskit.Entry("ctl", 0222),
+		fskit.Entry("ctx", fs.ModeDir|0755),
 		fskit.Entry("history", 0666),
 		fskit.Entry("output", 0444),
 		fskit.Entry("prefill", 0666),
@@ -681,6 +686,41 @@ func sessionStatusFile(s *session) fs.File {
 				return err
 			}
 			fskit.SetData(n, append(data, '\n'))
+			return nil
+		},
+	}
+}
+
+func sessionContextDir() fs.File {
+	return fskit.DirFile(fskit.Entry("ctx", fs.ModeDir|0755),
+		fskit.Entry("left", 0444),
+		fskit.Entry("usage", 0444),
+		fskit.Entry("window", 0444),
+	)
+}
+
+func sessionContextMetricFile(s *session, name string) fs.File {
+	return &fskit.FuncFile{
+		Node: fskit.Entry(name, 0444),
+		ReadFunc: func(n *fskit.Node) error {
+			s.mu.Lock()
+			win := s.contextWin
+			use := s.contextUse
+			s.mu.Unlock()
+			var value int
+			switch name {
+			case "left":
+				if win > use {
+					value = win - use
+				}
+			case "usage":
+				value = use
+			case "window":
+				value = win
+			default:
+				return &fs.PathError{Op: "read", Path: name, Err: fs.ErrNotExist}
+			}
+			fskit.SetData(n, []byte(strconv.Itoa(value)+"\n"))
 			return nil
 		},
 	}

@@ -50,6 +50,10 @@ Session files under `<id>/`:
   resets the live browser session.
 - `context`: read-only JSON prompt context, including the effective system
   prompt followed by user and assistant history.
+- `ctx/`: read-only context counters.
+  - `window`: Chrome `contextWindow`, or `0` when unavailable.
+  - `usage`: Chrome `contextUsage`, or `0` when unavailable.
+  - `left`: remaining context window, or `0` when unavailable.
 - `clone`: read-only allocator that copies the session and prints the new id.
 - `ctl`: write-only session control file.
   - `stop`: abort the current prompt.

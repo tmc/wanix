@@ -222,6 +222,7 @@ Live conversations after a fresh page load:
   cat llm/2/output
   cat llm/1/history
   cat llm/1/context
+  cat llm/1/ctx/usage
   cat llm/1/status
   echo close > llm/1/ctl
   echo close > llm/2/ctl
@@ -275,6 +276,7 @@ echo continue &gt; llm/2/ctl
 cat llm/2/output
 cat llm/1/history
 cat llm/1/context
+cat llm/1/ctx/usage
 cat llm/1/status
 echo close &gt; llm/1/ctl
 echo close &gt; llm/2/ctl</pre>
